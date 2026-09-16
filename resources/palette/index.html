@@ -163,6 +163,42 @@
       </div>
     </div>
 
+    <!-- ===== discovery: NPort finder + web-console credentials =====
+         Deliberately OUTSIDE #machineForm: readMachineForm() walks
+         form.elements, and none of these fields belong in a machine
+         record. The password in particular never round-trips. -->
+    <div class="card" id="nportCard">
+      <div class="card-head"><h2>Find an NPort</h2>
+        <div class="row gap-sm">
+          <button type="button" id="btnFindNport" class="btn btn-sm">Find NPort…</button>
+          <button type="button" id="btnProbePorts" class="btn btn-sm">Probe ports</button>
+        </div>
+      </div>
+      <p class="hint">Broadcasts Moxa's UDP search on port 4800. Wi-Fi access points often
+        block broadcast — if nothing turns up, give a subnet to sweep instead.</p>
+      <label class="field"><span>Subnet to sweep if broadcast is blocked</span>
+        <input id="nportSubnet" type="text" placeholder="192.168.1.0/24" autocomplete="off"></label>
+      <div id="nportStatus" class="hint"></div>
+      <ul id="nportList" class="machine-list nport-list"></ul>
+
+      <fieldset><legend>Web console login (optional)</legend>
+        <p class="hint">Used to read each port's baud rate and operation mode. Stored in the
+          operating system's keychain — never in settings.json, never in the log.</p>
+        <div class="grid-2">
+          <label class="field"><span>Account</span>
+            <input id="nportUser" type="text" placeholder="admin" autocomplete="off"></label>
+          <label class="field"><span>Password</span>
+            <input id="nportPass" type="password" autocomplete="new-password"></label>
+        </div>
+        <div class="row gap-sm wrap">
+          <button type="button" id="btnCredSave" class="btn btn-sm">Store login</button>
+          <button type="button" id="btnCredClear" class="btn btn-sm">Forget login</button>
+          <span id="credState" class="chip chip-idle">no login stored</span>
+        </div>
+      </fieldset>
+    </div>
+    <!-- ===== end discovery ===== -->
+
     <form id="machineForm" class="card grow" autocomplete="off">
       <div class="card-head"><h2 id="machineFormTitle">Settings</h2>
         <button type="button" id="btnSetDefault" class="link-btn">make default</button>
@@ -171,8 +207,21 @@
       <fieldset><legend>Connection</legend>
         <label class="field"><span>Name</span><input name="name" type="text" required></label>
         <label class="field"><span>Type</span>
-          <select name="type"><option value="moxa">Moxa NPort</option><option value="simulator">Simulator (no hardware)</option></select>
+          <!-- direct serial ports: "serial" option --><select name="type"><option value="moxa">Moxa NPort</option><option value="serial">Direct serial port</option><option value="simulator">Simulator (no hardware)</option></select>
         </label>
+        <!-- direct serial ports: shown only for type "serial" -->
+        <div id="serialPortRow" class="hidden">
+          <div class="grid-2">
+            <label class="field"><span>Serial port</span>
+              <select id="serialPortList" title="Serial ports found on this computer. Choosing one fills in the device below."><option value="">(refresh to list ports)</option></select>
+            </label>
+            <label class="field"><span>&nbsp;</span>
+              <button type="button" id="btnSerialRefresh" class="btn">Refresh ports</button>
+            </label>
+          </div>
+          <label class="field"><span>Device</span><input name="serial_device" type="text" placeholder="/dev/cu.usbserial-1420 or COM3" title="The serial port to open: a device path on macOS/Linux (use the cu.* name, not tty.*) or a COM name on Windows. Pick from the list above or type it in."></label>
+        </div>
+        <!-- end direct serial ports -->
         <div class="grid-2">
           <label class="field"><span>Host / IP</span><input name="host" type="text" placeholder="192.168.1.100"></label>
           <label class="field"><span>Port #</span><input name="port_index" type="number" min="1" max="32" step="1" title="Use this field to specify the port number on the device. Example: on a 4 port device, the ports are numbered 1-4."></label>
@@ -382,6 +431,37 @@
       </dl>
       <div id="aboutProtocol" class="notice"></div>
     </div>
+
+    <!-- ===== auto-update : begin ===== -->
+    <div class="card">
+      <h2 class="title">Updates</h2>
+      <div id="updateBanner" class="notice hidden">
+        <span id="updateBannerText"></span>
+        <a id="updateNotesLink" href="#" target="_blank" rel="noopener">Release notes</a>
+        <button id="btnUpdateInstall" class="btn btn-sm btn-primary">Install now</button>
+      </div>
+      <dl class="kv">
+        <dt>Installed</dt><dd id="updateCurrent" class="mono">—</dd>
+        <dt>Latest</dt><dd id="updateLatest" class="mono">—</dd>
+        <dt>Last checked</dt><dd id="updateLastCheck" class="mono">never</dd>
+      </dl>
+      <div class="actionbar">
+        <button id="btnUpdateCheck" class="btn btn-sm">Check now</button>
+        <span id="updateStatus" class="muted small"></span>
+      </div>
+      <label class="inline"><input id="updateAutoCheck" type="checkbox"> Check for updates automatically</label>
+      <label class="inline"><input id="updateAutoInstall" type="checkbox"> Install updates automatically</label>
+      <label class="inline"><input id="updatePrereleases" type="checkbox"> Include pre-releases</label>
+      <label class="field"><span>GitHub repository</span>
+        <input id="updateRepo" type="text" placeholder="owner/name" spellcheck="false">
+      </label>
+      <p id="updateDevNote" class="muted small hidden">
+        This is a development install (a git checkout, or a symlink to one).
+        Updates are applied with <span class="mono">git pull</span>, not from here.
+      </p>
+    </div>
+    <!-- ===== auto-update : end ===== -->
+
     <div class="card">
       <h2 class="title">Global</h2>
       <label class="field"><span>Log level</span>

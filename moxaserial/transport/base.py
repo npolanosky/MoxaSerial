@@ -135,6 +135,22 @@ class TransportStats:
         }
 
 
+def endpoint_of(machine: dict[str, Any]) -> dict[str, Any]:
+    """The physical thing a machine occupies while its transport is open.
+
+    Carried on ``transport.open`` / ``transport.close`` so the bridge can
+    keep a live set of endpoints this add-in is holding. Port probing reads
+    it to avoid ever touching a port we already have open: ``PORT_INIT``
+    applies line settings, so probing a port mid-transfer would change the
+    baud rate under a running job.
+    """
+    return {
+        "host": str(machine.get("host", "") or "").strip().lower(),
+        "portIndex": int(machine.get("port_index", 1) or 1),
+        "device": str(machine.get("serial_device", "") or "").strip(),
+    }
+
+
 class Transport(abc.ABC):
     """Abstract byte pipe to the control.
 
@@ -184,7 +200,10 @@ class Transport(abc.ABC):
         serial = machine.get("serial", {})
         self.set_dtr(bool(serial.get("assert_dtr", True)))
         self.set_rts(bool(serial.get("assert_rts", True)))
-        self._emit("transport.open", {"kind": self.kind, "machine": machine.get("name", "")})
+        self._emit(
+            "transport.open",
+            {"kind": self.kind, "machine": machine.get("name", ""), **endpoint_of(machine)},
+        )
 
     def close(self) -> None:
         """Disconnect. Idempotent; safe from another thread."""
@@ -195,7 +214,14 @@ class Transport(abc.ABC):
         try:
             self._do_close()
         finally:
-            self._emit("transport.close", {"kind": self.kind, "stats": self.stats.to_dict()})
+            self._emit(
+                "transport.close",
+                {
+                    "kind": self.kind,
+                    "stats": self.stats.to_dict(),
+                    **endpoint_of(self._machine or {}),
+                },
+            )
 
     def __enter__(self) -> Transport:
         return self

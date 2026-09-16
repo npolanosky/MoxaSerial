@@ -8,11 +8,17 @@ Windows or macOS.
 * **Send the last posted program** with one toolbar click, or browse for any
   file.
 * **Receive** a program punched out by the control, straight to a file.
+* **Direct serial ports too** — a machine can talk to a local RS-232 port
+  (onboard UART, USB adapter, virtual COM) instead of an NPort.
 * **CIMCO-style options**, name for name: baud / parity / stop bits, flow
   control, start and end triggers, omit and remove filters, line endings,
   block renumbering, handshake and idle timeouts, overwrite policy.
 * Live progress, RS-232 indicator LEDs, a scrolling preview of the in-flight
   line, and a built-in **Simulator** machine for a dry run with no hardware.
+* **Finds the NPort for you** — a network search fills in the address, and a
+  port probe reports which serial port is free and what mode it is in.
+* **Updates itself** from GitHub Releases — checked in the background,
+  installed on request, no Fusion restart.
 * Stdlib only — nothing to `pip install` into Fusion.
 
 ## Install

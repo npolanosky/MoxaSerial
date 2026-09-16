@@ -147,7 +147,14 @@ const S = {
   logEntries: [],
   logSeq: 0,
   unseenProblems: 0,
-  overwriteToken: ''
+  overwriteToken: '',
+  serialPortsLoaded: false,  /* list ports once per panel */
+  /* discovery: found devices keyed by IP, probe results keyed by
+     "<ip>:<portIndex>", and has_credentials by machine id. Never a password. */
+  found: {},
+  probes: {},
+  credentials: {},
+  scanId: ''
 };
 
 /* ==================================================================== */
@@ -158,6 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
   wireSendPage();
   wireReceivePage();
   wireMachinesPage();
+  wireNPortFinder();   // discovery
   wireLogPage();
   wireAboutPage();
   wireModal();
@@ -219,6 +227,11 @@ function onPush(action, payload) {
       }
       break;
     }
+    /* --- discovery --- */
+    case 'machines.discoverResult':   applyDiscoverResult(payload); break;
+    case 'machines.probePortsResult': applyProbeResult(payload); break;
+    case 'machines.credentials':      applyCredentials(payload); break;
+    /* --- end discovery --- */
     case 'transport.line_error':      setStatus('Device reported: ' + (payload.error || 'line error'), 'warn'); setLed('err', true); break;
     case 'receive.state':
     case 'receive.progress':          applyReceive(payload); break;
@@ -228,6 +241,17 @@ function onPush(action, payload) {
     case 'log.entry':                 addLogEntry(payload); break;
     case 'file.info':                 setFile(payload.file); break;
     case 'toast':                     toast(payload.message, payload.level); break;
+    /* ===== auto-update : begin ===== */
+    case 'update.checked':
+    case 'update.available':          applyUpdateResult(payload); break;
+    case 'update.progress':           setUpdateStatus(payload.message || payload.stage,
+                                        payload.percent >= 0 ? payload.percent : null); break;
+    case 'update.done':               setUpdateStatus('Installed ' + payload.to_version + '. Reloading…');
+                                      $('#btnUpdateInstall').disabled = true; break;
+    case 'update.error':              setUpdateStatus(payload.message || 'Update failed.', null, true);
+                                      $('#btnUpdateInstall').disabled = false; break;
+    case 'update.restart':            if (!payload.restarted) setUpdateStatus('Restart Fusion to load the update.', null, true); break;
+    /* ===== auto-update : end ===== */
     default: break;
   }
 }
@@ -264,7 +288,13 @@ function applyState(state) {
   $('#globalConfirm').checked = !!S.settings.confirm_before_send;
 
   $$('input[name="selmode"]').forEach((r) => { r.checked = r.value === S.settings.machine_selection; });
-  call('about.get').then((d) => { if (d) renderProtocolNotice(d.protocol); });
+  S.credentials = state.credentials || {};   // booleans only, never a password
+  renderCredentialState();
+  call('about.get').then((d) => {
+    if (!d) return;
+    renderProtocolNotice(d.protocol);
+    if (d.update) renderUpdateStatus(d.update);
+  });
 }
 
 /* ==================================================================== */
@@ -626,6 +656,14 @@ function wireMachinesPage() {
 
   $('#btnMachineRevert').addEventListener('click', () => selectMachineForEdit(S.editingId));
 
+  /* --- direct serial ports --- */
+  $('#btnSerialRefresh').addEventListener('click', () => { S.serialPortsLoaded = false; refreshSerialPorts(); });
+  $('#serialPortList').addEventListener('change', (e) => {
+    const field = $('#machineForm').elements['serial_device'];
+    if (field && e.target.value) field.value = e.target.value;
+  });
+  /* --- end direct serial ports --- */
+
   $('#btnMachineTest').addEventListener('click', async () => {
     const btn = $('#btnMachineTest');
     btn.disabled = true; btn.textContent = 'Testing…';
@@ -711,6 +749,14 @@ function selectMachineForEdit(id) {
   $('#machineFormTitle').textContent = m.name;
   renderMachineList();
   showErrors([]);
+  // discovery: the credential fields are not part of the form, so
+  // they have to be refreshed by hand when the selection changes.
+  if ($('#nportPass')) {
+    $('#nportPass').value = '';
+    $('#nportUser').value = '';
+    renderCredentialState();
+    call('machines.credentials', { id: m.id }).then((d) => { if (d) applyCredentials(d); });
+  }
 }
 
 function setField(form, name, value) {
@@ -734,13 +780,49 @@ function fillMachineForm(m) {
 }
 
 function toggleTypeFields(form) {
-  const isSim = form.elements['type'].value === 'simulator';
+  /* --- direct serial ports: three types, not two ------------ */
+  const type = form.elements['type'].value;
+  const isSim = type === 'simulator';
+  const isSerial = type === 'serial';
   ['host', 'port_index', 'data_port', 'cmd_port'].forEach((k) => {
     const node = form.elements[k];
-    if (node && node.closest('label')) node.closest('label').style.opacity = isSim ? 0.45 : 1;
-    if (node) node.disabled = isSim;
+    if (!node) return;
+    const label = node.closest('label');
+    /* A direct serial port has no host at all, so hide those fields
+       rather than dimming them the way the Simulator does. */
+    if (label) {
+      label.classList.toggle('hidden', isSerial);
+      label.style.opacity = isSim ? 0.45 : 1;
+    }
+    node.disabled = isSim || isSerial;
   });
+  const row = $('#serialPortRow');
+  if (row) row.classList.toggle('hidden', !isSerial);
+  if (isSerial && !S.serialPortsLoaded) refreshSerialPorts();
+  /* --- end direct serial ports ---------------------------------------------- */
 }
+
+/* --- direct serial ports ------------------------------------ */
+async function refreshSerialPorts() {
+  const list = $('#serialPortList');
+  const field = $('#machineForm').elements['serial_device'];
+  if (!list) return;
+  S.serialPortsLoaded = true;
+  list.replaceChildren(new Option('looking for ports…', ''));
+  const data = await call('serial.listPorts', {});
+  const ports = (data && data.ports) || [];
+  const current = field ? field.value : '';
+  /* Built with new Option() rather than innerHTML: a device name comes
+     from the operating system, not from us, and never gets to be markup. */
+  const options = [new Option(ports.length ? 'Choose a port…' : 'No serial ports found', '')];
+  ports.forEach((p) => options.push(new Option(p.label || p.device, p.device)));
+  if (current && !ports.some((p) => p.device === current)) {
+    options.push(new Option(current + ' (not detected)', current));
+  }
+  list.replaceChildren(...options);
+  list.value = current || '';
+}
+/* --- end direct serial ports ------------------------------------------------ */
 
 function readMachineForm() {
   const form = $('#machineForm');
@@ -757,6 +839,238 @@ function readMachineForm() {
   });
   return out;
 }
+
+/* ==================================================================== */
+/* discovery: NPort finder, port probe, web-console credentials    */
+/* Self-contained: nothing above this block calls into it except the    */
+/* three push cases, the wire call in boot, and renderCredentialState() */
+/* from applyState / selectMachineForEdit.                              */
+/* ==================================================================== */
+function wireNPortFinder() {
+  $('#btnFindNport').addEventListener('click', async () => {
+    const btn = $('#btnFindNport');
+    if (btn.dataset.running === '1') {
+      await call('machines.discoverStop', { scanId: S.scanId });
+      return;
+    }
+    S.found = {};
+    S.probes = {};
+    renderNPortList();
+    btn.dataset.running = '1';
+    btn.textContent = 'Stop';
+    setNPortStatus('Searching…');
+    const data = await call('machines.discover', {
+      timeout: 2.5,
+      subnet: $('#nportSubnet').value.trim()
+    });
+    if (!data || !data.started) finishScan('');
+  });
+
+  $('#btnProbePorts').addEventListener('click', () => {
+    const host = (($('#machineForm').elements['host'] || {}).value || '').trim();
+    if (!host) { toast('Enter the NPort IP address first.', 'error'); return; }
+    // Probe as many ports as the model has. Nothing discovered for this
+    // address yet? Sweep the first four - an unreachable port costs well
+    // under a second, and no NPort in this family has more.
+    const known = S.found[host];
+    probeDevice(host, (known && known.ports) || 4);
+  });
+
+  $('#btnCredSave').addEventListener('click', async () => {
+    if (!S.editingId) return;
+    const data = await call('machines.setCredentials', {
+      id: S.editingId,
+      username: $('#nportUser').value.trim(),
+      password: $('#nportPass').value
+    });
+    $('#nportPass').value = '';          // never keep it in the DOM
+    if (data) toast('Web console login stored in the ' + data.store.backend + '.', 'success');
+  });
+
+  $('#btnCredClear').addEventListener('click', async () => {
+    if (!S.editingId) return;
+    const data = await call('machines.clearCredentials', { id: S.editingId });
+    $('#nportPass').value = '';
+    if (data) toast(data.removed ? 'Login forgotten.' : 'Nothing was stored.', 'info');
+  });
+
+  renderNPortList();
+}
+
+function setNPortStatus(text) {
+  $('#nportStatus').textContent = text || '';
+}
+
+function finishScan(message) {
+  const btn = $('#btnFindNport');
+  btn.dataset.running = '0';
+  btn.textContent = 'Find NPort…';
+  setNPortStatus(message);
+}
+
+function applyDiscoverResult(p) {
+  if (p.scanId) S.scanId = p.scanId;
+  if (p.message) setNPortStatus(p.message);
+  if (p.device) {
+    S.found[p.device.ip] = p.device;
+    renderNPortList();
+  }
+  if (p.done) {
+    const n = p.count || 0;
+    finishScan(p.error
+      ? 'Search failed: ' + p.error
+      : (n ? n + ' device' + (n === 1 ? '' : 's') + ' found.'
+           : 'Nothing answered. Try a subnet sweep — Wi-Fi often blocks broadcast.'));
+  }
+}
+
+function probeDevice(ip, ports) {
+  setNPortStatus('Probing ' + ip + '…');
+  Object.keys(S.probes).forEach((k) => { if (k.indexOf(ip + ':') === 0) delete S.probes[k]; });
+  // A host typed into the form has never been discovered, so give it a
+  // row of its own - otherwise the probe result would have nowhere to go.
+  if (!S.found[ip]) {
+    S.found[ip] = { ip: ip, model: 'NPort at ' + ip, ports: ports || 2, source: 'manual' };
+  } else if (ports > S.found[ip].ports) {
+    S.found[ip].ports = ports;
+  }
+  renderNPortList();
+  call('machines.probePorts', {
+    host: ip,
+    machineId: S.editingId,
+    count: Math.max(1, ports || 2)
+  });
+}
+
+function applyProbeResult(p) {
+  if (p.port) {
+    S.probes[p.host + ':' + p.port.portIndex] = p.port;
+    renderNPortList();
+  }
+  if (p.done) {
+    (p.ports || []).forEach((port) => { S.probes[p.host + ':' + port.portIndex] = port; });
+    renderNPortList();
+    if (p.error) setNPortStatus('Probe failed: ' + p.error);
+    else if (p.consoleError) setNPortStatus('Probed ' + p.host + ' (web console: ' + p.consoleError + ')');
+    else setNPortStatus('Probed ' + p.host + (p.consoleUsed ? ' with the web console.' : '.'));
+  }
+}
+
+function renderNPortList() {
+  const list = $('#nportList');
+  list.innerHTML = '';
+  const ips = Object.keys(S.found);
+  if (!ips.length) {
+    const li = el('li');
+    li.appendChild(el('span', 'd-empty', 'No devices yet. Press "Find NPort…".'));
+    list.appendChild(li);
+    return;
+  }
+  ips.sort().forEach((ip) => {
+    const d = S.found[ip];
+    const li = el('li');
+
+    const head = el('div', 'd-head');
+    head.appendChild(el('span', 'd-model', d.model || 'Moxa device'));
+    head.appendChild(el('span', 'd-ip', d.ip));
+    const probe = el('button', 'btn btn-sm', 'Probe');
+    probe.type = 'button';
+    probe.addEventListener('click', () => probeDevice(d.ip, d.ports || 2));
+    head.appendChild(probe);
+    li.appendChild(head);
+
+    const bits = [];
+    if (d.name) bits.push(d.name);
+    if (d.mac) bits.push(d.mac);
+    if (d.firmware) bits.push('fw ' + d.firmware);
+    if (d.serialNumber) bits.push('S/N ' + d.serialNumber);
+    if (d.ports) bits.push(d.ports + (d.ports === 1 ? ' port' : ' ports'));
+    if (d.source === 'tcp') bits.push('found by port scan');
+    li.appendChild(el('div', 'd-sub', bits.join(' · ')));
+
+    const row = el('div', 'd-ports');
+    for (let i = 1; i <= Math.max(1, d.ports || 1); i += 1) {
+      row.appendChild(portChip(d, i, S.probes[d.ip + ':' + i]));
+    }
+    li.appendChild(row);
+    list.appendChild(li);
+  });
+}
+
+function portChip(device, index, probe) {
+  const chip = el('div', 'd-port');
+  chip.appendChild(el('span', 'p-n', 'Port ' + index));
+  if (probe) {
+    if (probe.busy) chip.classList.add('is-busy');
+    else if (!probe.reachable) chip.classList.add('is-dead');
+    const detail = [];
+    if (probe.modeLabel) detail.push(probe.modeLabel);
+    if (probe.settings && probe.settings.summary) detail.push(probe.settings.summary);
+    if (probe.modem) {
+      detail.push('DSR ' + (probe.modem.dsr ? '1' : '0')
+        + ' CTS ' + (probe.modem.cts ? '1' : '0')
+        + ' DCD ' + (probe.modem.dcd ? '1' : '0'));
+    }
+    if (probe.busy) detail.push('in use');
+    else if (!probe.reachable) detail.push('no answer');
+    chip.appendChild(el('span', 'p-lines', detail.join(' · ')));
+    if (probe.error) chip.title = probe.error;
+  }
+  const use = el('button', 'btn btn-sm', 'Use');
+  use.type = 'button';
+  use.addEventListener('click', () => useDevicePort(device, index, probe));
+  chip.appendChild(use);
+  return chip;
+}
+
+/* Fill the machine form's connection fields from a discovered port. The
+   form is left dirty on purpose - the operator still has to press Save. */
+function useDevicePort(device, index, probe) {
+  const form = $('#machineForm');
+  if (form.elements['type'].value === 'simulator') {
+    form.elements['type'].value = 'moxa';
+    toggleTypeFields(form);
+  }
+  setField(form, 'host', device.ip);
+  setField(form, 'port_index', index);
+  setField(form, 'cmd_port', (probe && probe.cmdPort) || (966 + index - 1));
+  const realcom = !probe || probe.mode !== 'tcp_server';
+  setField(form, 'data_port', (probe && probe.dataPort)
+    || ((realcom ? 950 : 4001) + index - 1));
+  if (probe && probe.settings) {
+    const s = probe.settings;
+    if (s.baud) setField(form, 'serial.baud', s.baud);
+    if (s.data_bits) setField(form, 'serial.data_bits', s.data_bits);
+    if (s.parity) setField(form, 'serial.parity', s.parity);
+    if (s.stop_bits) setField(form, 'serial.stop_bits', s.stop_bits);
+    if (s.flow_control) setField(form, 'serial.flow_control', s.flow_control);
+  }
+  toast('Filled in ' + device.ip + ' port ' + index + '. Press Save to keep it.', 'success');
+}
+
+function applyCredentials(p) {
+  if (!p || !p.machineId) return;
+  S.credentials[p.machineId] = !!p.has_credentials;
+  if (p.machineId === S.editingId && p.username !== undefined) {
+    $('#nportUser').value = p.username || '';
+  }
+  renderCredentialState(p.store);
+}
+
+function renderCredentialState(store) {
+  const chip = $('#credState');
+  if (!chip) return;
+  const has = !!S.credentials[S.editingId];
+  chip.textContent = has ? 'login stored' : 'no login stored';
+  chip.className = 'chip ' + (has ? 'chip-ok' : 'chip-idle');
+  if (store && !store.secure) {
+    chip.title = 'Stored in ' + store.backend + ' — ' + (store.warning || 'weaker than a keychain');
+  }
+}
+
+/* ==================================================================== */
+/* end discovery                                                   */
+/* ==================================================================== */
 
 function showErrors(problems) {
   const box = $('#machineErrors');
@@ -835,7 +1149,94 @@ function wireAboutPage() {
   $('#globalConfirm').addEventListener('change', (e) => {
     call('settings.save', { settings: { confirm_before_send: e.target.checked } });
   });
+  wireUpdateCard();
 }
+
+/* ===== auto-update : begin ===== */
+const U = { latest: '', notesUrl: '', available: false, dev: false };
+
+function saveUpdateSetting(patch) {
+  call('settings.save', { settings: { update: patch } });
+}
+
+function wireUpdateCard() {
+  $('#updateAutoCheck').addEventListener('change', (e) => saveUpdateSetting({ auto_check: e.target.checked }));
+  $('#updateAutoInstall').addEventListener('change', (e) => saveUpdateSetting({ auto_install: e.target.checked }));
+  $('#updatePrereleases').addEventListener('change', (e) => saveUpdateSetting({ include_prereleases: e.target.checked }));
+  $('#updateRepo').addEventListener('change', (e) => saveUpdateSetting({ repo: e.target.value.trim() }));
+  $('#btnUpdateCheck').addEventListener('click', () => {
+    setUpdateStatus('Checking GitHub…');
+    call('update.check', {});
+  });
+  $('#btnUpdateInstall').addEventListener('click', () => {
+    if (U.dev) { setUpdateStatus('Development install — use git pull.', null, true); return; }
+    $('#btnUpdateInstall').disabled = true;
+    setUpdateStatus('Starting…', 0);
+    call('update.install', {});
+  });
+  $('#updateNotesLink').addEventListener('click', (e) => {
+    if (!U.notesUrl) e.preventDefault();
+  });
+}
+
+/* Renders `about.get -> update` (settings + last known result). */
+function renderUpdateStatus(status) {
+  const cfg = status.settings || {};
+  $('#updateCurrent').textContent = status.current || '—';
+  $('#updateAutoCheck').checked = !!cfg.auto_check;
+  $('#updateAutoInstall').checked = !!cfg.auto_install;
+  $('#updatePrereleases').checked = !!cfg.include_prereleases;
+  if (document.activeElement !== $('#updateRepo')) $('#updateRepo').value = cfg.repo || '';
+  $('#updateLastCheck').textContent = fmtWhen(cfg.last_check);
+  U.dev = !!status.developmentInstall;
+  $('#updateDevNote').classList.toggle('hidden', !U.dev);
+  $('#btnUpdateInstall').disabled = U.dev;
+  if (status.result && status.result.latest) applyUpdateResult(status.result);
+  else $('#updateLatest').textContent = cfg.last_seen_version || '—';
+  if (cfg.last_error) setUpdateStatus(cfg.last_error, null, true);
+}
+
+/* Renders a check result ({available, latest, notes, html_url, error}). */
+function applyUpdateResult(r) {
+  if (!r) return;
+  if (r.current) $('#updateCurrent').textContent = r.current;
+  if (r.checked) $('#updateLastCheck').textContent = fmtWhen(r.checked);
+  $('#updateLatest').textContent = r.latest || '—';
+  U.latest = r.latest || '';
+  U.notesUrl = r.html_url || '';
+  U.available = !!r.available;
+
+  const banner = $('#updateBanner');
+  if (r.available) {
+    $('#updateBannerText').textContent = 'Update ' + r.latest + ' available';
+    const link = $('#updateNotesLink');
+    link.href = r.html_url || '#';
+    link.title = (r.notes || '').slice(0, 400);
+    banner.classList.remove('hidden');
+    $('#btnUpdateInstall').disabled = U.dev;
+    setUpdateStatus(U.dev ? 'Development install — use git pull.' : '', null, U.dev);
+  } else {
+    banner.classList.add('hidden');
+    if (r.error) setUpdateStatus(r.error, null, true);
+    else if (r.latest) setUpdateStatus('Up to date.');
+  }
+}
+
+function setUpdateStatus(text, percent, isError) {
+  const box = $('#updateStatus');
+  box.textContent = (percent === null || percent === undefined)
+    ? (text || '')
+    : (text || '') + ' ' + Math.round(percent) + '%';
+  box.style.color = isError ? 'var(--err)' : '';
+}
+
+function fmtWhen(epochSeconds) {
+  if (!epochSeconds) return 'never';
+  const d = new Date(epochSeconds * 1000);
+  if (isNaN(d.getTime())) return 'never';
+  return d.toLocaleString();
+}
+/* ===== auto-update : end ===== */
 
 function renderProtocolNotice(protocol) {
   const box = $('#aboutProtocol');

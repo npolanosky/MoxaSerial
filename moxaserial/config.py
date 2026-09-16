@@ -39,12 +39,25 @@ from moxaserial.log import get_logger
 
 log = get_logger("config")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# --- auto-update -----------------------------------------
+#: GitHub ``owner/name`` the updater watches. One constant, one place to
+#: change it; the operator can still override it per install from the About
+#: page (``settings.update.repo``).
+DEFAULT_UPDATE_REPO = "npolanosky/MoxaSerial"
+#: Hours between automatic checks. 0 means "every time the add-in starts".
+DEFAULT_CHECK_INTERVAL_HOURS = 24
+# ---------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------
 # Enumerations - keep these in sync with resources/palette/app.js
 # --------------------------------------------------------------------------
-MACHINE_TYPES = ("moxa", "simulator")
+# --- direct serial ports: "serial" machine type ----------------
+#: ``serial`` is a local port - onboard UART, USB adapter, or virtual COM -
+#: addressed by the ``serial_device`` key rather than host/port.
+MACHINE_TYPES = ("moxa", "serial", "simulator")
+# --- end direct serial ports ----------------------------------------------------
 PARITIES = ("none", "odd", "even", "mark", "space")
 DATA_BITS = (5, 6, 7, 8)
 STOP_BITS = ("1", "1.5", "2")
@@ -240,6 +253,9 @@ def default_machine(name: str = "New Machine", kind: str = "moxa") -> dict[str, 
         "name": name,
         "type": kind,
         "host": "192.168.1.100",
+        # --- direct serial ports: the local port, e.g. /dev/cu.usbserial-A1 or COM3
+        "serial_device": "",
+        # --- end direct serial ports
         "port_index": 1,
         "data_port": DEFAULT_DATA_PORT_BASE,
         "cmd_port": DEFAULT_CMD_PORT_BASE,
@@ -251,7 +267,9 @@ def default_machine(name: str = "New Machine", kind: str = "moxa") -> dict[str, 
         "notes": "",
         # A real control gets CIMCO's shipped line settings (9600 7E2,
         # software flow control); the Simulator keeps our own 8-N-1.
-        "serial": cimco_serial() if kind == "moxa" else default_serial(),
+        # --- direct serial ports: a direct port is a real control too
+        "serial": cimco_serial() if kind in ("moxa", "serial") else default_serial(),
+        # --- end direct serial ports
         "send": default_send(),
         "receive": default_receive(),
     }
@@ -278,6 +296,57 @@ def simulator_machine() -> dict[str, Any]:
     return m
 
 
+# --- auto-update -----------------------------------------
+
+def default_update() -> dict[str, Any]:
+    """The ``update`` settings section.
+
+    ``last_check`` / ``last_seen_*`` are bookkeeping the updater writes back,
+    not operator-facing options; they live here so the check interval
+    survives a Fusion restart.
+    """
+    return {
+        "auto_check": True,
+        "auto_install": False,
+        "include_prereleases": False,
+        "check_interval_hours": DEFAULT_CHECK_INTERVAL_HOURS,
+        "repo": DEFAULT_UPDATE_REPO,
+        "last_check": 0.0,
+        "last_seen_version": "",
+        "last_error": "",
+    }
+
+
+def normalize_update(raw: Any) -> dict[str, Any]:
+    src = raw if isinstance(raw, dict) else {}
+    out = default_update()
+    out["auto_check"] = _as_bool(src.get("auto_check"), out["auto_check"])
+    out["auto_install"] = _as_bool(src.get("auto_install"), out["auto_install"])
+    out["include_prereleases"] = _as_bool(
+        src.get("include_prereleases"), out["include_prereleases"]
+    )
+    out["check_interval_hours"] = _as_int(
+        src.get("check_interval_hours"), DEFAULT_CHECK_INTERVAL_HOURS, 0, 24 * 30
+    )
+    repo = _as_str(src.get("repo", "")).strip().strip("/")
+    # Accept a pasted URL as well as "owner/name".
+    for prefix in ("https://github.com/", "http://github.com/", "github.com/"):
+        if repo.lower().startswith(prefix):
+            repo = repo[len(prefix):]
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    out["repo"] = repo if repo.count("/") == 1 and all(repo.split("/")) else DEFAULT_UPDATE_REPO
+    try:
+        out["last_check"] = max(0.0, float(src.get("last_check", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        out["last_check"] = 0.0
+    out["last_seen_version"] = _as_str(src.get("last_seen_version", "")).strip()
+    out["last_error"] = _as_str(src.get("last_error", "")).strip()
+    return out
+
+# ---------------------------------------------------------------------------
+
+
 def default_settings() -> dict[str, Any]:
     sim = simulator_machine()
     return {
@@ -290,6 +359,9 @@ def default_settings() -> dict[str, Any]:
         "theme": "dark",
         "confirm_before_send": False,
         "watch_folders": [],
+        # --- auto-update ---
+        "update": default_update(),
+        # -------------------------------------
     }
 
 
@@ -355,6 +427,9 @@ def normalize_machine(raw: dict[str, Any]) -> dict[str, Any]:
         "name": _as_str(src.get("name") or "Unnamed").strip() or "Unnamed",
         "type": _choice(src.get("type"), MACHINE_TYPES, "moxa"),
         "host": _as_str(src.get("host", base["host"])).strip(),
+        # --- direct serial ports: free-text device path / COM name, no defaulting
+        "serial_device": _as_str(src.get("serial_device", "")).strip(),
+        # --- end direct serial ports
         # CIMCO's [TCPIPDIRECT] PORTNO is a 1..32 device port index.
         "port_index": _as_int(src.get("port_index"), 1, 1, 32),
         "connect_timeout_s": _as_int(src.get("connect_timeout_s"), 8, 1, 120),
@@ -483,6 +558,13 @@ def validate_machine(machine: dict[str, Any]) -> list[str]:
         port = machine.get("data_port")
         if not isinstance(port, int) or not (1 <= port <= 65535):
             problems.append("Data port must be between 1 and 65535.")
+    # --- direct serial ports: a direct port needs a device name, nothing else
+    if kind == "serial" and not _as_str(machine.get("serial_device", "")).strip():
+        problems.append(
+            "A serial port is required for a direct serial machine "
+            "(for example /dev/cu.usbserial-1420 or COM3)."
+        )
+    # --- end direct serial ports
     serial = machine.get("serial", {})
     send = machine.get("send", {})
     if send.get("wait_for_ready") == "xon" and serial.get("flow_control") not in (
@@ -575,6 +657,9 @@ def normalize_settings(raw: dict[str, Any]) -> dict[str, Any]:
     out["watch_folders"] = [str(f) for f in folders if str(f).strip()] if isinstance(
         folders, list
     ) else []
+    # --- auto-update ---
+    out["update"] = normalize_update(src.get("update"))
+    # -------------------------------------
     out["schema_version"] = SCHEMA_VERSION
     return out
 
@@ -656,7 +741,22 @@ def _migrate_1_to_2(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-_MIGRATIONS = {0: _migrate_0_to_1, 1: _migrate_1_to_2}
+# --- auto-update -----------------------------------------
+
+def _migrate_2_to_3(data: dict[str, Any]) -> dict[str, Any]:
+    """Schema 3 adds the ``update`` section (auto-update from GitHub Releases).
+
+    Nothing is renamed and nothing existing changes meaning. An upgrading
+    install gets the shipped defaults - auto-check on, auto-install off - and
+    ``last_check`` at 0 so the first check happens at the next start.
+    """
+    out = dict(data)
+    out["update"] = normalize_update(out.get("update"))
+    return out
+
+
+_MIGRATIONS = {0: _migrate_0_to_1, 1: _migrate_1_to_2, 2: _migrate_2_to_3}
+# ---------------------------------------------------------------------------
 
 
 # --------------------------------------------------------------------------
@@ -746,12 +846,23 @@ class ConfigStore:
             "theme",
             "confirm_before_send",
             "watch_folders",
+            # --- auto-update ---
+            "update",
+            # -------------------------------------
         )
         with self._lock:
             merged = dict(self._data)
             for k, v in values.items():
-                if k in allowed:
-                    merged[k] = v
+                if k not in allowed:
+                    continue
+                # --- auto-update ---
+                # `update` is a section, not a scalar: a partial save from the
+                # About page must not reset the keys it did not send.
+                if k == "update" and isinstance(v, dict):
+                    merged[k] = {**(merged.get(k) or {}), **v}
+                    continue
+                # -------------------------------------
+                merged[k] = v
             self._data = normalize_settings(merged)
         if save:
             self.save()

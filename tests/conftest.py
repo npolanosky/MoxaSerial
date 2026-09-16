@@ -19,6 +19,9 @@ def isolated_app_data(tmp_path, monkeypatch):
     data = tmp_path / "appdata"
     data.mkdir()
     monkeypatch.setenv("MOXASERIAL_DATA_DIR", str(data))
+    # discovery: never let a test reach the real macOS keychain or the
+    # Windows Credential Manager - the file backend lands inside tmp_path.
+    monkeypatch.setenv("MOXASERIAL_SECRET_BACKEND", "file")
     from moxaserial.log import LogManager
 
     LogManager.reset()

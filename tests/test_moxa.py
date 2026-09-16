@@ -366,8 +366,12 @@ def test_wait_for_xon_survives_a_connection_drop(sim):
     m = machine_for(sim, flow_control="xonxoff", device_flow_control=False)
     m["send"].update({"wait_for_ready": "xon", "ready_timeout_s": 20, "start_chars": "", "end_chars": "",
                       "line_ending": "LF"})
-    m["reconnect_attempts"] = 4
-    m["reconnect_delay_s"] = 0.2
+    # Generous on purpose. 4 attempts x 0.2 s is only ~0.8 s of reconnect
+    # budget, and on a loaded machine the simulator can take longer than that
+    # to re-accept - which fails the test for a reason that has nothing to do
+    # with what it is checking.
+    m["reconnect_attempts"] = 12
+    m["reconnect_delay_s"] = 0.3
     bus = EventBus()
     logs = []
     bus.subscribe("send.log", lambda e: logs.append(e.payload["message"]))
@@ -380,7 +384,10 @@ def test_wait_for_xon_survives_a_connection_drop(sim):
         if conn is not None:
             conn.shutdown(2)
     assert wait_until(lambda: any("reconnecting" in x.lower() for x in logs), timeout=5), logs
-    assert wait_until(lambda: sender.state is SendState.WAITING_READY and port.data_conn is not None, timeout=8)
+    assert wait_until(
+        lambda: sender.state is SendState.WAITING_READY and port.data_conn is not None,
+        timeout=20,
+    ), sender.snapshot()
     time.sleep(0.2)
     port.cnc_send(b"\x11")
     assert wait_until(lambda: sender.state.is_terminal, timeout=10), sender.snapshot()

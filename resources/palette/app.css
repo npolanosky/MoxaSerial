@@ -311,6 +311,26 @@ legend { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; colo
 }
 .selection-mode { padding-top: 2px; }
 
+/* ---------- discovery: NPort finder ---------- */
+.nport-list { max-height: 210px; }
+.nport-list li { display: block; cursor: default; padding: 6px 7px; }
+.nport-list li:hover { background: transparent; }
+.nport-list .d-head { display: flex; align-items: center; gap: 6px; }
+.nport-list .d-model { flex: 1 1 auto; font-weight: 600; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.nport-list .d-ip { font-family: var(--mono); font-size: 10px; color: var(--fg-mute); }
+.nport-list .d-sub { font-size: 10px; color: var(--fg-mute); margin: 2px 0 4px; }
+.nport-list .d-ports { display: flex; flex-wrap: wrap; gap: 4px; }
+.nport-list .d-port {
+  display: flex; align-items: center; gap: 4px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 2px 4px; font-size: 10px; background: var(--bg-3);
+}
+.nport-list .d-port .p-lines { font-family: var(--mono); color: var(--fg-mute); }
+.nport-list .d-port.is-busy { border-color: var(--warn); color: var(--warn); }
+.nport-list .d-port.is-dead { opacity: .5; }
+.nport-list .d-empty { color: var(--fg-mute); }
+
 /* ---------- log ---------- */
 .log-list { flex: 1 1 auto; min-height: 90px; overflow: auto; font: 11px/1.5 var(--mono); }
 .log-row { display: flex; gap: 6px; padding: 1px 4px; border-bottom: 1px solid var(--line); }
@@ -369,3 +389,14 @@ legend { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; colo
   .page[data-page="machines"] fieldset .row,
   .page[data-page="machines"] fieldset .hint { grid-column: 1 / -1; }
 }
+
+/* ===== auto-update : begin ===== */
+#updateBanner {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  border-style: solid; border-color: var(--accent); color: var(--fg);
+}
+#updateBanner.hidden { display: none; }
+#updateBanner a { color: var(--accent); }
+#updateBanner .btn { margin-left: auto; }
+#updateRepo { font-family: var(--mono); }
+/* ===== auto-update : end ===== */

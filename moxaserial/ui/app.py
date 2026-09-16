@@ -17,6 +17,7 @@ from moxaserial.config import ConfigStore
 from moxaserial.events import default_bus
 from moxaserial.log import LogManager, get_logger
 from moxaserial.ui import commands, lastpost, toast
+from moxaserial.ui import updater as updater_mod
 from moxaserial.ui.palette import PaletteBridge
 
 log = get_logger("app")
@@ -105,6 +106,19 @@ class FusionHost(Host):
             log.debug("Reveal failed for %s", path, exc_info=True)
             return False
 
+    # --- auto-update -----------------------------------
+    def addin_dir(self) -> str:
+        return updater_mod.addin_root()
+
+    def restart_addin(self) -> bool:
+        """Stop and start this add-in so the freshly installed files load.
+
+        Deferred onto the main thread via a custom event - see
+        ``moxaserial/ui/updater.py`` for why it cannot happen inline.
+        """
+        return updater_mod.restart_addin()
+    # ---------------------------------------------------------------------
+
     def describe(self) -> dict[str, Any]:
         info: dict[str, Any] = {"host": self.name}
         try:
@@ -139,6 +153,9 @@ def start(handlers: list) -> None:
     _state.update({"bridge": bridge, "palette": palette, "app": app, "handlers": handlers})
 
     toast.install(app, handlers)
+    # --- auto-update ---
+    updater_mod.install(app, handlers)
+    # -------------------------------------
     palette.install(app, handlers)
     commands.create(
         ui,
@@ -150,6 +167,14 @@ def start(handlers: list) -> None:
         },
     )
     log.info("MoxaSerial %s started.", bridge.state()["version"])
+    # --- auto-update ---
+    # Delayed and on a worker thread: start-up must not wait on a TLS
+    # handshake, and the check is network-only until the operator says install.
+    try:
+        bridge.updates.schedule_startup_check()
+    except Exception:  # noqa: BLE001 - an update check must never block start-up
+        log.debug("Could not schedule the start-up update check", exc_info=True)
+    # -------------------------------------
 
 
 def stop() -> None:
@@ -163,6 +188,9 @@ def stop() -> None:
             if palette is not None:
                 palette.destroy(app)
             toast.uninstall(app)
+            # --- auto-update ---
+            updater_mod.uninstall(app)
+            # -------------------------------------
             commands.destroy(app.userInterface)
     except Exception:
         log.error("Shutdown problem:\n%s", traceback.format_exc())

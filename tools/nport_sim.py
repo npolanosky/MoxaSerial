@@ -426,6 +426,7 @@ class NPortSimulator:
         alive_timeout: float = 6.0,
         max_connections: int = 1,
         instant: bool = False,
+        strict_aspp: bool = False,
     ) -> None:
         self.host = host
         self.cmd_base = cmd_base
@@ -436,6 +437,17 @@ class NPortSimulator:
         self.max_connections = max_connections
         #: When True the serial model ignores baud and drains instantly.
         self.instant = instant
+        #: Model the two connection rules a real NPort W2250A enforces
+        #: (verified 2026-09-16), which the permissive default does not:
+        #:
+        #: * the command socket is reset unless the FIRST frame on it is
+        #:   ``PORT_INIT``;
+        #: * that ``PORT_INIT`` is not answered until the matching data
+        #:   socket is connected too.
+        #:
+        #: Off by default so the existing engine tests keep their simple
+        #: command-only fixtures; the discovery probe tests turn it on.
+        self.strict_aspp = strict_aspp
         self.ports: list[SimPort] = [SimPort(i, self) for i in range(ports)]
         self.cmd_ports: list[int] = []
         self.data_ports: list[int] = []
@@ -534,6 +546,7 @@ class NPortSimulator:
     def _cmd_loop(self, conn: socket.socket, port: SimPort) -> None:
         conn.settimeout(0.2)
         buf = bytearray()
+        first_frame = True
         try:
             while not self._stop.is_set():
                 try:
@@ -551,6 +564,18 @@ class NPortSimulator:
                         break
                     payload = bytes(buf[2 : 2 + length])
                     del buf[: 2 + length]
+                    if self.strict_aspp and first_frame and op != CMD_PORT_INIT:
+                        log.warning(
+                            "port %d: first command was 0x%02x, not PORT_INIT - dropping",
+                            port.index, op,
+                        )
+                        return
+                    if self.strict_aspp and op == CMD_PORT_INIT and not self._await_data(port):
+                        log.warning(
+                            "port %d: PORT_INIT with no data socket - dropping", port.index
+                        )
+                        return
+                    first_frame = False
                     resp = port.handle_command(op, payload)
                     if resp is not None:
                         try:
@@ -566,6 +591,17 @@ class NPortSimulator:
                 conn.close()
             except OSError:
                 pass
+
+    def _await_data(self, port: SimPort, timeout: float = 1.5) -> bool:
+        """Wait for the port's data socket, as the real NPort does."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if port.data_conn is not None:
+                return True
+            if self._stop.is_set():
+                return False
+            time.sleep(0.01)
+        return port.data_conn is not None
 
     def _data_loop(self, conn: socket.socket, port: SimPort) -> None:
         conn.settimeout(0.2)
@@ -615,6 +651,132 @@ class NPortSimulator:
                     port.send_polling(self._poll_token)
                 next_poll = now + self.polling_interval
             time.sleep(0.01)
+
+
+# ---------------------------------------------------------------------------
+# UDP discovery (NPort Administrator's "search", port 4800)
+# ---------------------------------------------------------------------------
+DISCOVERY_PORT = 4800
+DISC_SEARCH = 0x01
+DISC_NAME = 0x10
+DISC_INFO = 0x16
+
+
+class DiscoveryResponder:
+    """A fake NPort answering Moxa's UDP search protocol.
+
+    Byte-for-byte what a W2250A produced on 2026-09-16 (see
+    ``moxaserial/discovery.py`` for the field-by-field derivation), with
+    the identity fields parameterised so a test can stand up several
+    "devices" at once. Binds an ephemeral port when *port* is 0 and
+    publishes it as :attr:`port`, so tests never need UDP 4800 or root.
+    """
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        ip: str = "127.0.0.1",
+        mac: str = "40:2c:f4:fd:49:33",
+        name: str = "KIA_Lathe",
+        model_id: int = 0x2452,
+        product_line: int = 0x2450,
+        firmware: tuple[int, int] = (2, 2),
+        serial_number: int = 9645,
+        ports: int = 2,
+        answer: Callable[[int], bool] | None = None,
+    ) -> None:
+        self.host = host
+        self.ip = ip
+        self.mac = bytes(int(b, 16) for b in mac.split(":"))
+        self.name = name
+        self.model_id = model_id
+        self.product_line = product_line
+        self.firmware = firmware
+        self.serial_number = serial_number
+        self.n_ports = ports
+        #: ``answer(opcode) -> bool``: return False to make the device look
+        #: like older firmware that does not implement that opcode.
+        self.answer = answer or (lambda _op: True)
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind((host, port))
+        self._sock.settimeout(0.2)
+        self.port: int = self._sock.getsockname()[1]
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    # -- lifecycle -------------------------------------------------------
+    def __enter__(self) -> DiscoveryResponder:
+        self.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="nport-disc", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    # -- wire ------------------------------------------------------------
+    @property
+    def device_id(self) -> bytes:
+        return struct.pack("<IH", (0x8000 << 16) | self.product_line, self.model_id) + self.mac
+
+    def _reply(self, opcode: int, sequence: int, payload: bytes) -> bytes:
+        body = self.device_id + payload
+        return struct.pack("!BBHI", opcode | 0x80, 0, 8 + len(body), sequence) + body
+
+    def _error(self, opcode: int, sequence: int) -> bytes:
+        return struct.pack("!BBHI", opcode | 0x80, 4, 8 + 12, sequence) + self.device_id
+
+    def build_reply(self, request: bytes) -> bytes | None:
+        if len(request) < 8:
+            return None
+        opcode, _flags, _length, sequence = struct.unpack("!BBHI", request[:8])
+        if opcode & 0x80:
+            return None
+        if not self.answer(opcode):
+            return self._error(opcode, sequence)
+        if opcode == DISC_SEARCH:
+            return self._reply(opcode, sequence, socket.inet_aton(self.ip))
+        if opcode == DISC_NAME:
+            return self._reply(opcode, sequence, self.name.encode("latin-1").ljust(40, b"\0"))
+        if opcode == DISC_INFO:
+            major, minor = self.firmware
+            payload = (
+                struct.pack("<I", (major << 24) | (minor << 16))
+                + b"\x00\x00\x03\x01"
+                + struct.pack("<I", self.serial_number)
+                + bytes([0x18, 0x00, 0x00, self.n_ports])
+            )
+            return self._reply(opcode, sequence, payload)
+        return self._error(opcode, sequence)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                data, addr = self._sock.recvfrom(2048)
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            reply = self.build_reply(data)
+            if reply is None:
+                continue
+            try:
+                self._sock.sendto(reply, addr)
+            except OSError:
+                return
 
 
 def main() -> None:

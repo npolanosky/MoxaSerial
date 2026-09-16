@@ -321,3 +321,105 @@ def test_unsubscribe_stops_the_push(bridge):
 def test_shutdown_is_idempotent(bridge):
     bridge.shutdown()
     bridge.shutdown()
+
+
+# -- auto-update -------------------------------------------
+
+def test_about_carries_the_update_status(bridge):
+    data = ok(bridge.handle("about.get"))
+    assert "update" in data
+    status = data["update"]
+    assert status["settings"]["repo"] == "npolanosky/MoxaSerial"
+    assert status["settings"]["auto_check"] is True
+    assert status["settings"]["auto_install"] is False
+    assert status["current"]
+    assert isinstance(status["developmentInstall"], bool)
+
+
+def test_update_status_action(bridge):
+    assert ok(bridge.handle("update.status"))["settings"]["check_interval_hours"] == 24
+
+
+def test_update_check_is_async_by_default(bridge, monkeypatch):
+    calls: list[bool] = []
+    monkeypatch.setattr(bridge.updates, "check_async", lambda force=True: calls.append(force))
+    assert ok(bridge.handle("update.check", {})) == {"started": True}
+    assert calls == [True]
+
+
+def test_update_check_sync_returns_the_result(bridge, monkeypatch):
+    from moxaserial import update as update_mod
+
+    monkeypatch.setattr(
+        update_mod,
+        "check_for_update",
+        lambda **kw: {"available": True, "latest": "9.9.9", "checked": 1.0, "error": ""},
+    )
+    data = ok(bridge.handle("update.check", {"sync": True}))
+    assert data["latest"] == "9.9.9"
+    # The result is remembered for the About page, not just returned.
+    assert bridge.store.get("update")["last_seen_version"] == "9.9.9"
+
+
+def test_update_check_pushes_the_result(bridge, monkeypatch):
+    from moxaserial import update as update_mod
+
+    seen: list[tuple[str, dict]] = []
+    bridge.subscribe_outbound(lambda a, p: seen.append((a, p)))
+    monkeypatch.setattr(
+        update_mod,
+        "check_for_update",
+        lambda **kw: {
+            "available": True, "latest": "9.9.9", "current": "0.1.0",
+            "checked": 1.0, "error": "",
+        },
+    )
+    bridge.handle("update.check", {"sync": True})
+    actions = [a for a, _ in seen]
+    assert "update.checked" in actions and "update.available" in actions
+
+
+def test_update_install_starts_a_worker(bridge, monkeypatch):
+    seen: list = []
+
+    def fake(release=None):
+        seen.append(release)
+        return {"started": True}
+
+    monkeypatch.setattr(bridge.updates, "install_async", fake)
+    assert ok(bridge.handle("update.install", {}))["started"] is True
+    assert seen == [None]
+
+
+def test_update_install_refuses_a_second_run(bridge):
+    bridge.updates._busy = True
+    data = ok(bridge.handle("update.install", {}))
+    assert data["started"] is False
+    assert "already in progress" in data["error"]
+
+
+def test_update_settings_save_is_partial(bridge):
+    ok(bridge.handle("settings.save", {"settings": {"update": {"repo": "acme/thing"}}}))
+    ok(bridge.handle("settings.save", {"settings": {"update": {"auto_install": True}}}))
+    cfg = bridge.store.get("update")
+    assert cfg["repo"] == "acme/thing"
+    assert cfg["auto_install"] is True
+    assert cfg["auto_check"] is True  # untouched by either save
+
+
+def test_update_settings_reject_a_nonsense_repo(bridge):
+    ok(bridge.handle("settings.save", {"settings": {"update": {"repo": "not-a-repo"}}}))
+    assert bridge.store.get("update")["repo"] == "npolanosky/MoxaSerial"
+
+
+def test_update_settings_accept_a_pasted_github_url(bridge):
+    ok(bridge.handle(
+        "settings.save", {"settings": {"update": {"repo": "https://github.com/acme/thing.git"}}}
+    ))
+    assert bridge.store.get("update")["repo"] == "acme/thing"
+
+
+def test_the_default_host_cannot_restart_the_addin():
+    host = Host()
+    assert host.restart_addin() is False
+    assert host.addin_dir() == ""

@@ -47,8 +47,10 @@ TEXT_SUFFIXES = {".py", ".md", ".txt", ".json", ".html", ".css", ".js", ".toml",
 # Substrings that are allowed to match a rule above. Each is a documented
 # exception, not a blanket mute.
 ALLOWED = (
-    # Documented placeholder for "type your NPort's address here".
-    "192.168.1.100",
+    # The documented example network. Prose, docstrings and form placeholders
+    # say "type your NPort's address here" with a 192.168.1.x address on
+    # purpose, so that no real device address has to appear in a public file.
+    "192.168.1.",
 )
 
 RULES: list[tuple[str, str]] = [
@@ -60,9 +62,14 @@ RULES: list[tuple[str, str]] = [
     ("Windows user path", r"[A-Za-z]:\\+Users\\+[A-Za-z0-9._-]+"),
     ("mounted volume path", r"/Volumes/[A-Za-z0-9._-]+"),
     ("e-mail address", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}\b"),
-    # "no admin password", "never asks for a password" are installer prose,
-    # not credentials: require an assignment-ish context.
-    ("password", r"(?i)\bpass(?:word|wd|phrase)\b\s*[:=]\s*\S"),
+    # "no admin password" is installer prose and `password: str = ""` is a
+    # signature, so an assignment-ish context is not enough on its own: the
+    # value has to be a non-empty *literal*. That still catches
+    # `password = "hunter2"` and `"password": "hunter2"`, while ignoring
+    # annotations, keyword forwarding (`password=password`) and expressions
+    # (`password = str(payload.get(...))`). Whitespace in the value means
+    # prose — an error message keyed "password" is not a password.
+    ("password", r"""(?i)\bpass(?:word|wd|phrase)\b["']?\s*[:=]\s*["'][^"'\s]+["']"""),
     # "repository secret" in CI docs is prose; flag only assignments.
     ("secret", r"(?i)\bsecret\b\s*[:=]\s*\S"),
     # "token" is a protocol noun here (the ASPP POLLING token, the receive
@@ -82,9 +89,25 @@ RULES: list[tuple[str, str]] = [
 
 COMPILED = [(name, re.compile(pat)) for name, pat in RULES]
 
-# Files whose whole job is to name the private material, per rule.
+# Files whose whole job is to name the private material, per rule. Scoped to
+# one file and one rule each, never to a shipped module: application code is
+# always scanned in full.
 RULE_EXEMPT: dict[str, set[str]] = {
     ".gitignore": {"reference to a non-public path"},
+    # These pin datagrams captured byte-for-byte from a real NPort, and the
+    # console tests replay a captured login page. The addresses, the CSRF
+    # token and the passwords in them are test fixtures, not credentials.
+    "tests/test_discovery.py": {
+        "private IPv4 (10.0.0.0/8)",
+        "private IPv4 (192.168.0.0/16)",
+    },
+    "tests/test_bridge_discovery.py": {"private IPv4 (10.0.0.0/8)", "password"},
+    "tests/test_nport_console.py": {
+        "private IPv4 (192.168.0.0/16)",
+        "password",
+        "credential token",
+    },
+    "tests/test_secrets.py": {"password"},
 }
 
 

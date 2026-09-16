@@ -253,3 +253,72 @@ def test_data_is_a_copy_not_a_live_reference(tmp_path):
     snapshot = store.data
     snapshot["machines"][0]["name"] = "mutated"
     assert store.machines()[0]["name"] != "mutated"
+
+
+# -- auto-update section ----------------------------------
+
+def test_update_section_defaults():
+    from moxaserial.config import DEFAULT_UPDATE_REPO, default_settings
+
+    cfg = default_settings()["update"]
+    assert cfg == {
+        "auto_check": True,
+        "auto_install": False,
+        "include_prereleases": False,
+        "check_interval_hours": 24,
+        "repo": DEFAULT_UPDATE_REPO,
+        "last_check": 0.0,
+        "last_seen_version": "",
+        "last_error": "",
+    }
+
+
+def test_update_section_normalisation_is_lenient():
+    from moxaserial.config import DEFAULT_UPDATE_REPO, normalize_update
+
+    cfg = normalize_update(
+        {
+            "auto_check": "no",
+            "auto_install": 1,
+            "check_interval_hours": "-5",
+            "repo": "  github.com/Acme/Thing/  ",
+            "last_check": "not a number",
+            "unknown_key": "dropped",
+        }
+    )
+    assert cfg["auto_check"] is False
+    assert cfg["auto_install"] is True
+    assert cfg["check_interval_hours"] == 0      # clamped, not rejected
+    assert cfg["repo"] == "Acme/Thing"
+    assert cfg["last_check"] == 0.0
+    assert "unknown_key" not in cfg
+    assert normalize_update(None)["repo"] == DEFAULT_UPDATE_REPO
+    assert normalize_update({"repo": "one-part"})["repo"] == DEFAULT_UPDATE_REPO
+    assert normalize_update({"repo": "a/b/c"})["repo"] == DEFAULT_UPDATE_REPO
+
+
+def test_update_section_clamps_a_silly_interval():
+    from moxaserial.config import normalize_update
+
+    assert normalize_update({"check_interval_hours": 10**9})["check_interval_hours"] == 24 * 30
+
+
+def test_migration_2_to_3_adds_the_update_section():
+    old = {"schema_version": 2, "machines": [{"id": "m1", "name": "Old"}]}
+    data, notes = migrate(old)
+    assert data["schema_version"] == SCHEMA_VERSION
+    assert data["update"]["auto_check"] is True
+    assert data["update"]["auto_install"] is False   # never install behind someone's back
+    assert data["update"]["last_check"] == 0.0       # so the first check happens at start-up
+    assert data["machines"][0]["id"] == "m1"
+    assert any("2 -> 3" in n for n in notes)
+
+
+def test_update_section_round_trips_through_the_store(tmp_path):
+    store = ConfigStore(tmp_path / "s.json")
+    store.update_globals({"update": {"repo": "acme/thing", "last_check": 1234.5}})
+    reloaded = ConfigStore(tmp_path / "s.json")
+    cfg = reloaded.get("update")
+    assert cfg["repo"] == "acme/thing"
+    assert cfg["last_check"] == 1234.5
+    assert cfg["auto_check"] is True
