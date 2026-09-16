@@ -1,0 +1,67 @@
+#!/bin/bash
+#
+# Runs before the payload is laid down. A package overlays files rather than
+# replacing a directory, so an upgrade would otherwise leave behind modules
+# that a newer version deleted. Move any existing install aside first, to
+# MoxaSerial.bak-<timestamp>, exactly like install.py does.
+#
+# Installer argument $3 is the destination volume; for a home-relative install
+# that is the user's home directory. $HOME is also set correctly, but we prefer
+# $3 and fall back through $HOME and the console user's home so the script
+# behaves the same however it is invoked.
+#
+set -u
+
+ADDIN_NAME="MoxaSerial"
+REL="Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
+
+resolve_home() {
+    if [ "${3:-}" != "" ] && [ "${3:-}" != "/" ] && [ -d "${3:-}" ]; then
+        printf '%s\n' "$3"
+        return
+    fi
+    if [ -n "${HOME:-}" ] && [ "$HOME" != "/" ] && [ "$HOME" != "/var/root" ]; then
+        printf '%s\n' "$HOME"
+        return
+    fi
+    console_user="$(/usr/bin/stat -f %Su /dev/console 2>/dev/null)"
+    if [ -n "$console_user" ] && [ "$console_user" != "root" ]; then
+        /usr/bin/dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null \
+            | /usr/bin/awk '{print $2}'
+        return
+    fi
+    printf '%s\n' "${HOME:-}"
+}
+
+USER_HOME="$(resolve_home "$@")"
+if [ -z "$USER_HOME" ] || [ ! -d "$USER_HOME" ]; then
+    echo "MoxaSerial preinstall: cannot resolve a home directory; leaving any existing install in place" >&2
+    exit 0
+fi
+
+TARGET="$USER_HOME/$REL/$ADDIN_NAME"
+
+# -L as well as -e: a *broken* symlink is invisible to -e, and a symlink to a
+# live source checkout (how developers run the add-in) must be moved aside
+# rather than written through -- otherwise the installer would overwrite the
+# developer's working tree.
+if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+    BACKUP="$TARGET.bak-$(/bin/date +%Y%m%d-%H%M%S)"
+    n=1
+    while [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; do
+        n=$((n + 1))
+        BACKUP="$TARGET.bak-$(/bin/date +%Y%m%d-%H%M%S)-$n"
+    done
+    if [ -L "$TARGET" ]; then
+        echo "MoxaSerial preinstall: $TARGET is a symlink to $(/usr/bin/readlink "$TARGET")"
+        echo "MoxaSerial preinstall: moving the symlink to $BACKUP so the payload is not written through it"
+        echo "MoxaSerial preinstall: to go back to the linked checkout, rename $BACKUP back to $TARGET"
+    else
+        echo "MoxaSerial preinstall: moving existing install to $BACKUP"
+    fi
+    /bin/mv "$TARGET" "$BACKUP" || {
+        echo "MoxaSerial preinstall: could not move $TARGET aside; continuing anyway" >&2
+    }
+fi
+
+exit 0

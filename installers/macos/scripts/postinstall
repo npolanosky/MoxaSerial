@@ -1,0 +1,55 @@
+#!/bin/bash
+#
+# Runs after the payload is laid down. The home-relative install-location has
+# already put the files in the right place; this script only verifies that,
+# makes sure the add-in folder belongs to the user who will run Fusion (rather
+# than to root, in case the package was ever installed in a system domain),
+# and leaves a breadcrumb in the installer log.
+#
+set -u
+
+ADDIN_NAME="MoxaSerial"
+REL="Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
+
+CONSOLE_USER="$(/usr/bin/stat -f %Su /dev/console 2>/dev/null)"
+
+resolve_home() {
+    if [ "${3:-}" != "" ] && [ "${3:-}" != "/" ] && [ -d "${3:-}" ]; then
+        printf '%s\n' "$3"
+        return
+    fi
+    if [ -n "${HOME:-}" ] && [ "$HOME" != "/" ] && [ "$HOME" != "/var/root" ]; then
+        printf '%s\n' "$HOME"
+        return
+    fi
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+        /usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null \
+            | /usr/bin/awk '{print $2}'
+        return
+    fi
+    printf '%s\n' "${HOME:-}"
+}
+
+USER_HOME="$(resolve_home "$@")"
+TARGET="$USER_HOME/$REL/$ADDIN_NAME"
+
+if [ ! -f "$TARGET/MoxaSerial.manifest" ]; then
+    echo "MoxaSerial postinstall: FAILED -- $TARGET/MoxaSerial.manifest is missing" >&2
+    exit 1
+fi
+
+# Belt and braces: if we are root, hand the tree to the user who owns the home
+# directory, so Fusion (running as that user) can read and update it.
+if [ "$(/usr/bin/id -u)" = "0" ]; then
+    OWNER="$(/usr/bin/stat -f %Su "$USER_HOME" 2>/dev/null)"
+    GROUP="$(/usr/bin/stat -f %Sg "$USER_HOME" 2>/dev/null)"
+    if [ -n "$OWNER" ] && [ "$OWNER" != "root" ]; then
+        /usr/sbin/chown -R "$OWNER:${GROUP:-staff}" "$TARGET" 2>/dev/null || true
+    fi
+fi
+
+/usr/bin/find "$TARGET" -type d -exec /bin/chmod 755 {} + 2>/dev/null || true
+/usr/bin/find "$TARGET" -type f -exec /bin/chmod 644 {} + 2>/dev/null || true
+
+echo "MoxaSerial postinstall: installed to $TARGET"
+exit 0

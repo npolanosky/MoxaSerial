@@ -1,0 +1,73 @@
+# Which paths belong in the public MoxaSerial repository.
+#
+# Lines are glob patterns matched against repo-relative POSIX paths.
+#   pattern   -> ships
+#   !pattern  -> deliberately private, never ships
+# Blank lines and lines starting with "#" are ignored.
+#
+# tools/check_public_tree.py enforces this file: every file in the working
+# tree must match exactly one side, and the public side is scanned for
+# leaked hostnames, paths, customer names and credentials.
+
+# --- Add-in entry points -------------------------------------------------
+MoxaSerial.py
+MoxaSerial.manifest
+moxaserial_loader.py
+
+# --- Package -------------------------------------------------------------
+moxaserial/**/*.py
+
+# --- Palette and toolbar resources ---------------------------------------
+resources/**/*.html
+resources/**/*.css
+resources/**/*.js
+resources/**/*.png
+resources/**/*.md
+
+# --- Developer tools (no hardware required) -------------------------------
+tools/nport_sim.py
+tools/dev_server.py
+tools/make_icons.py
+tools/public_manifest.txt
+tools/check_public_tree.py
+
+# --- Tests ---------------------------------------------------------------
+tests/**/*.py
+
+# --- Docs and project files ----------------------------------------------
+README.md
+ARCHITECTURE.md
+CHANGELOG.md
+LICENSE
+.gitignore
+ruff.toml
+pytest.ini
+
+# --- Produced by the packaging/CI work, may not exist yet -----------------
+installers/**
+.github/**
+
+# --- Private: never publish ----------------------------------------------
+# Proprietary CIMCO help extracts and reverse-engineering notes.
+!research/**
+# Original build brief.
+!prompt+requirements.md
+# Local scratch, tooling state and build output.
+!.devdata/**
+!.claude/**
+!**/__pycache__/**
+!**/*.py[cod]
+!.venv/**
+!venv/**
+!.pytest_cache/**
+!.ruff_cache/**
+!node_modules/**
+!build/**
+!dist/**
+!Cimco-for-reference/**
+!**/.DS_Store
+!**/Thumbs.db
+!**/*.log
+install.py
+tools/bump_version.py
+tools/make_release_zip.py

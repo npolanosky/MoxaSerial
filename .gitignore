@@ -1,0 +1,45 @@
+# Private working material - never published.
+# See tools/public_manifest.txt for the authoritative public file set.
+research/
+prompt+requirements.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+
+# Editors and agent tooling
+.vscode/
+.idea/
+.claude/
+
+# Add-in runtime state
+*.log
+
+# Dev server scratch data
+.devdata/
+
+# Build output
+build/
+dist/
+*.pkg
+*.exe
+*.zip
+
+# Proprietary reference copy, never tracked
+Cimco-for-reference/
+# Built installers (tools/make_release_zip.py, installers/macos/build_pkg.sh,
+# installers/windows/MoxaSerial.iss all write here)
+# Local dev launcher
+.claude/

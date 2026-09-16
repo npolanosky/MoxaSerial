@@ -1,0 +1,321 @@
+name: Release
+
+# Pushing a v* tag builds all three installers and publishes them as a GitHub
+# Release:
+#
+#     MoxaSerial-<version>.zip         portable, any OS, plus install.py
+#     MoxaSerial-<version>.pkg         macOS, installs into ~/Library, no sudo
+#     MoxaSerial-<version>-setup.exe   Windows, installs into %APPDATA%, no admin
+#     SHA256SUMS                       checksums for all three
+#
+# Cut a release with:
+#     python3 tools/bump_version.py 0.2.0     # edits MoxaSerial.manifest
+#     git commit -am "release: v0.2.0" && git tag -a v0.2.0 -m "MoxaSerial v0.2.0"
+#     git push origin HEAD --follow-tags
+#
+# The version always comes from MoxaSerial.manifest; the `version` job checks
+# that the tag agrees with it and fails the release early if it does not.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Manual runs build and verify all three installers but never publish --
+  # the release job below requires an actual v* tag push.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------ version
+  version:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - id: v
+        name: Read MoxaSerial.manifest and check it against the tag
+        run: |
+          set -euo pipefail
+          VERSION=$(python tools/make_release_zip.py --print-version)
+          echo "manifest version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          TAG="${GITHUB_REF_NAME}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [ "$TAG" != "v$VERSION" ]; then
+              echo "::error::tag $TAG does not match MoxaSerial.manifest version $VERSION." \
+                   "Run tools/bump_version.py $VERSION, or retag."
+              exit 1
+            fi
+          fi
+
+  # --------------------------------------------------------------------- test
+  test:
+    name: lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest ruff
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: pytest
+        run: pytest -q
+
+  # ---------------------------------------------------------------------- zip
+  zip:
+    name: zip (portable)
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the release zip
+        run: python tools/make_release_zip.py --check-manifest
+
+      - name: Verify the archive installs
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.version.outputs.version }}"
+          mkdir -p "$RUNNER_TEMP/unzipped"
+          unzip -q "dist/MoxaSerial-$VERSION.zip" -d "$RUNNER_TEMP/unzipped"
+          test -f "$RUNNER_TEMP/unzipped/MoxaSerial/MoxaSerial.manifest"
+          test -f "$RUNNER_TEMP/unzipped/install.py"
+          python "$RUNNER_TEMP/unzipped/install.py" --dest "$RUNNER_TEMP/addins"
+          test -f "$RUNNER_TEMP/addins/MoxaSerial/moxaserial/ui/app.py"
+          # No build junk must ever reach a user's AddIns folder.
+          if unzip -l "dist/MoxaSerial-$VERSION.zip" | grep -E '__pycache__|\.pyc'; then
+            echo "::error::the archive contains build junk"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zip
+          path: dist/MoxaSerial-*.zip
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------- macOS
+  macos:
+    name: macOS .pkg
+    needs: [version, test]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the installer package
+        # Set MOXASERIAL_PKG_SIGN_ID (and import a Developer ID Installer
+        # certificate into a keychain first) to produce a signed .pkg.
+        run: installers/macos/build_pkg.sh
+
+      - name: Verify it installs into the current user's home, without sudo
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.version.outputs.version }}"
+          PKG="dist/MoxaSerial-$VERSION.pkg"
+          installer -pkg "$PKG" -target CurrentUserHomeDirectory
+          TARGET="$HOME/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/MoxaSerial"
+          test -f "$TARGET/MoxaSerial.manifest"
+          test -f "$TARGET/moxaserial/ui/app.py"
+          test -f "$TARGET/resources/palette/index.html"
+          echo "installed $(find "$TARGET" -type f | wc -l | tr -d ' ') files"
+          # It must never have written outside the home directory.
+          test ! -e "/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/MoxaSerial"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg
+          path: dist/MoxaSerial-*.pkg
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------ Windows
+  windows:
+    name: Windows setup.exe
+    needs: [version, test]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Check install.ps1 parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+              "installers/windows/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          Write-Host "install.ps1 parses cleanly"
+
+      - name: Compile the installer
+        shell: pwsh
+        run: |
+          $version = "${{ needs.version.outputs.version }}"
+          # Note the braces: ${env:ProgramFiles(x86)} -- "(x86)" is not valid in
+          # a bare PowerShell variable name.
+          $iscc = @(
+              "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+              "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found after 'choco install innosetup'" }
+          Write-Host "using $iscc"
+          & $iscc "/DMyAppVersion=$version" "installers\windows\MoxaSerial.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          Get-ChildItem dist
+
+      - name: Verify the installer runs silently and per-user
+        shell: pwsh
+        run: |
+          $version = "${{ needs.version.outputs.version }}"
+          $setup = "dist\MoxaSerial-$version-setup.exe"
+          $log = Join-Path $env:RUNNER_TEMP 'setup.log'
+          # /VERYSILENT with no elevation: PrivilegesRequired=lowest must hold.
+          $p = Start-Process -FilePath $setup `
+              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=$log" `
+              -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "setup exited $($p.ExitCode)" }
+
+          $target = Join-Path $env:APPDATA 'Autodesk\Autodesk Fusion 360\API\AddIns\MoxaSerial'
+          # Setup.exe can return before its extracted child has finished, so
+          # give the last file a moment to appear rather than racing it.
+          $probe = Join-Path $target 'resources\palette\index.html'
+          for ($i = 0; $i -lt 30 -and -not (Test-Path $probe); $i++) { Start-Sleep -Seconds 1 }
+
+          if (Test-Path $log) { Write-Host "--- setup log tail ---"; Get-Content $log -Tail 25 }
+          foreach ($f in 'MoxaSerial.manifest','moxaserial\ui\app.py','resources\palette\index.html') {
+              if (-not (Test-Path (Join-Path $target $f))) { throw "missing after install: $f" }
+          }
+          Write-Host "installed $((Get-ChildItem $target -Recurse -File).Count) files into $target"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: dist/MoxaSerial-*-setup.exe
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------ release
+  release:
+    name: publish GitHub Release
+    needs: [version, zip, macos, windows]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect artifacts and checksum them
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -print -exec cp {} dist/ \;
+          cd dist
+          sha256sum MoxaSerial-* > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Build the release notes
+        id: notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          python3 - <<'PY' > release-notes.md
+          import os, pathlib, re
+
+          version = os.environ["VERSION"]
+          tag = os.environ["TAG"]
+          changelog = pathlib.Path("CHANGELOG.md")
+
+          body = ""
+          if changelog.is_file():
+              lines = changelog.read_text(encoding="utf-8").splitlines()
+              heading = re.compile(r"^##\s+")
+              start = next((i for i, ln in enumerate(lines) if heading.match(ln)), None)
+              if start is not None:
+                  end = next((i for i in range(start + 1, len(lines)) if heading.match(lines[i])), len(lines))
+                  body = "\n".join(lines[start + 1:end]).strip()
+
+          if body:
+              print(body)
+              print()
+
+          print("### Install")
+          print()
+          print(f"| | |")
+          print(f"|---|---|")
+          print(f"| **macOS** | `MoxaSerial-{version}.pkg` -- double-click. Installs into your home folder; no admin password. |")
+          print(f"| **Windows** | `MoxaSerial-{version}-setup.exe` -- double-click. Installs into `%APPDATA%`; no admin rights. |")
+          print(f"| **Any OS** | `MoxaSerial-{version}.zip` -- unzip, then `python3 install.py`. |")
+          print()
+          print("Then in Fusion: **Utilities > ADD-INS > Scripts and Add-Ins** (Shift+S) > "
+                "**Add-Ins** tab > **MoxaSerial** > **Run**, and tick *Run on Startup*.")
+          print()
+          print("Verify a download against `SHA256SUMS`:")
+          print()
+          print("```")
+          print(f"shasum -a 256 -c SHA256SUMS --ignore-missing     # macOS / Linux")
+          print(f"certutil -hashfile MoxaSerial-{version}-setup.exe SHA256   # Windows")
+          print("```")
+          print()
+          print("> The installers are **not code-signed yet**, so macOS Gatekeeper and "
+                "Windows SmartScreen will warn on first run. On macOS, right-click the "
+                ".pkg and choose *Open*; on Windows, choose *More info > Run anyway*. "
+                "Or use the zip, which neither gatekeeper inspects.")
+          PY
+          echo "--- release notes ---"
+          cat release-notes.md
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: MoxaSerial ${{ needs.version.outputs.version }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/MoxaSerial-*.zip
+            dist/MoxaSerial-*.pkg
+            dist/MoxaSerial-*-setup.exe
+            dist/SHA256SUMS

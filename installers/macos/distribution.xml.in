@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!--
+  Distribution for the MoxaSerial installer.
+
+  The <domains> element is the important part: only the current user's home is
+  a legal destination, so Installer.app installs into ~/Library without asking
+  for an administrator password, and never into /Library. Combined with the
+  relative install-location passed to pkgbuild, the payload lands in
+  ~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/MoxaSerial.
+
+  @VERSION@ / @COMPONENT@ / @IDENTIFIER@ are substituted by build_pkg.sh.
+-->
+<installer-gui-script minSpecVersion="2">
+    <title>MoxaSerial @VERSION@</title>
+    <organization>com.p3d</organization>
+
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <license file="LICENSE.txt" mime-type="text/plain"/>
+
+    <options customize="never" require-scripts="false" rootVolumeOnly="false"/>
+    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+
+    <choices-outline>
+        <line choice="default"/>
+    </choices-outline>
+
+    <choice id="default" title="MoxaSerial" visible="false">
+        <pkg-ref id="@IDENTIFIER@"/>
+    </choice>
+
+    <pkg-ref id="@IDENTIFIER@" version="@VERSION@" onConclusion="none">@COMPONENT@</pkg-ref>
+</installer-gui-script>

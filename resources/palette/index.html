@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moxa DNC</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">DNC</span>
+    <select id="machineSelect" class="machine-select" title="Active machine"></select>
+  </div>
+  <div class="topbar-right">
+    <span id="stateChip" class="chip chip-idle">IDLE</span>
+    <button id="themeToggle" class="icon-btn" title="Toggle light / dark">◐</button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab is-active" data-page="send" role="tab">Send</button>
+  <button class="tab" data-page="receive" role="tab">Receive</button>
+  <button class="tab" data-page="machines" role="tab">Machines</button>
+  <button class="tab" data-page="log" role="tab">Log<span id="logBadge" class="badge hidden">0</span></button>
+  <button class="tab" data-page="about" role="tab">About</button>
+</nav>
+
+<main id="pages">
+
+  <!-- ================= SEND ================= -->
+  <section class="page is-active" data-page="send">
+    <div class="card">
+      <div class="card-head">
+        <h2>Program</h2>
+        <span id="fileSource" class="muted small"></span>
+      </div>
+      <div class="row gap">
+        <button id="btnLastPost" class="btn">Last posted</button>
+        <button id="btnBrowse" class="btn">Browse…</button>
+      </div>
+      <div id="fileInfo" class="file-info empty">No file selected.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Options</h2>
+        <button id="btnEditMachine" class="link-btn">edit machine</button>
+      </div>
+      <div id="optionChips" class="chips"></div>
+    </div>
+
+    <div class="card">
+      <div class="progress-head">
+        <span id="progPercent" class="progress-percent">0%</span>
+        <span id="progCounts" class="muted small">0 / 0 lines</span>
+      </div>
+      <div class="progress"><div id="progBar" class="progress-fill"></div></div>
+      <div class="progress-meta">
+        <span id="progBytes" class="muted small">0 B</span>
+        <span id="progTime" class="muted small">--:-- elapsed</span>
+        <span id="progEta" class="muted small">ETA --:--</span>
+        <span id="progCps" class="muted small" title="Characters per second">0 CPS</span>
+        <span id="progErrors" class="muted small" title="Errors during this transfer">0 errors</span>
+      </div>
+
+      <div id="leds" class="leds">
+        <span class="led" data-led="tx"><i></i>TX</span>
+        <span class="led" data-led="rx"><i></i>RX</span>
+        <span class="led" data-led="cts"><i></i>CTS</span>
+        <span class="led" data-led="dsr"><i></i>DSR</span>
+        <span class="led" data-led="dcd"><i></i>DCD</span>
+        <span class="led" data-led="dtr" title="DTR (our output)"><i></i>DTR</span>
+        <span class="led" data-led="rts" title="RTS (our output)"><i></i>RTS</span>
+        <span class="led led-warn" data-led="xoff"><i></i>XOFF</span>
+        <span class="led led-warn" data-led="err" title="Errors during this transfer"><i></i>Error</span>
+      </div>
+    </div>
+
+    <div class="card grow">
+      <div class="card-head">
+        <h2>Line preview</h2>
+        <span id="previewMeta" class="muted small"></span>
+      </div>
+      <div id="linePreview" class="code-window" aria-live="polite">
+        <div class="code-empty">Choose a program to preview the processed output.</div>
+      </div>
+    </div>
+
+    <div id="sendStatus" class="status-line">Ready.</div>
+
+    <div class="actionbar">
+      <button id="btnStart" class="btn btn-primary">Start</button>
+      <button id="btnPause" class="btn" disabled>Pause</button>
+      <button id="btnStop" class="btn btn-danger" disabled>Stop</button>
+      <button id="btnResend" class="btn" disabled>Resend</button>
+    </div>
+  </section>
+
+  <!-- ================= RECEIVE ================= -->
+  <section class="page" data-page="receive">
+    <div class="card">
+      <div class="card-head"><h2>Target</h2>
+        <button id="btnEditReceive" class="link-btn">edit machine</button>
+      </div>
+      <dl class="kv">
+        <dt>Folder</dt><dd id="rcvFolder" class="mono ellipsis">—</dd>
+        <dt>Pattern</dt><dd id="rcvPattern" class="mono">—</dd>
+        <dt>If it exists</dt><dd id="rcvPolicy">—</dd>
+        <dt>Triggers</dt><dd id="rcvTriggers" class="mono">—</dd>
+        <dt>Idle timeout</dt><dd id="rcvIdle">—</dd>
+      </dl>
+      <label class="field">
+        <span>Filename override <em class="muted">(optional)</em></span>
+        <input id="rcvFilename" type="text" placeholder="leave blank to use the pattern">
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="progress-head">
+        <span id="rcvState" class="progress-percent">IDLE</span>
+        <span id="rcvCounts" class="muted small">0 lines · 0 B</span>
+      </div>
+      <div class="leds">
+        <span class="led" data-led="rcvrx"><i></i>RX</span>
+        <span id="rcvIdleLed" class="muted small"></span>
+      </div>
+    </div>
+
+    <div class="card grow">
+      <div class="card-head"><h2>Incoming</h2>
+        <span id="rcvTarget" class="muted small ellipsis"></span>
+      </div>
+      <div id="rcvTail" class="code-window">
+        <div class="code-empty">Nothing received yet.</div>
+      </div>
+    </div>
+
+    <div id="rcvStatus" class="status-line">Idle.</div>
+
+    <div class="actionbar">
+      <button id="btnRcvStart" class="btn btn-primary">Start receiving</button>
+      <button id="btnRcvStop" class="btn btn-danger" disabled>Stop</button>
+      <button id="btnRcvReveal" class="btn" disabled>Show file</button>
+    </div>
+  </section>
+
+  <!-- ================= MACHINES ================= -->
+  <section class="page" data-page="machines">
+    <div class="card">
+      <div class="card-head"><h2>Machines</h2>
+        <div class="row gap-sm">
+          <button id="btnMachineNew" class="btn btn-sm">New</button>
+          <button id="btnMachineDup" class="btn btn-sm">Duplicate</button>
+          <button id="btnMachineDel" class="btn btn-sm btn-danger">Delete</button>
+        </div>
+      </div>
+      <ul id="machineList" class="machine-list"></ul>
+      <div class="row gap-sm wrap selection-mode">
+        <label class="inline"><input type="radio" name="selmode" value="default"> Always start on the default machine</label>
+        <label class="inline"><input type="radio" name="selmode" value="last_used"> Start on the last used machine</label>
+      </div>
+    </div>
+
+    <form id="machineForm" class="card grow" autocomplete="off">
+      <div class="card-head"><h2 id="machineFormTitle">Settings</h2>
+        <button type="button" id="btnSetDefault" class="link-btn">make default</button>
+      </div>
+
+      <fieldset><legend>Connection</legend>
+        <label class="field"><span>Name</span><input name="name" type="text" required></label>
+        <label class="field"><span>Type</span>
+          <select name="type"><option value="moxa">Moxa NPort</option><option value="simulator">Simulator (no hardware)</option></select>
+        </label>
+        <div class="grid-2">
+          <label class="field"><span>Host / IP</span><input name="host" type="text" placeholder="192.168.1.100"></label>
+          <label class="field"><span>Port #</span><input name="port_index" type="number" min="1" max="32" step="1" title="Use this field to specify the port number on the device. Example: on a 4 port device, the ports are numbered 1-4."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Data port</span><input name="data_port" type="number" min="1" max="65535"></label>
+          <label class="field"><span>Command port</span><input name="cmd_port" type="number" min="1" max="65535"></label>
+        </div>
+        <label class="field"><span>Connect timeout (s)</span><input name="connect_timeout_s" type="number" min="1" max="120"></label>
+        <label class="inline" title="Re-connect without restarting the port when a problem is detected with the device."><input name="auto_reconnect" type="checkbox"> Attempt auto re-connect</label>
+        <div class="grid-2">
+          <label class="field"><span>Re-connect attempts</span><input name="reconnect_attempts" type="number" min="0" max="10" title="How many extra times to retry opening the port before the send fails."></label>
+          <label class="field"><span>Re-connect delay (s)</span><input name="reconnect_delay_s" type="number" min="0" max="60" title="Seconds to wait between re-connect attempts."></label>
+        </div>
+      </fieldset>
+
+      <fieldset><legend>Serial line</legend>
+        <div class="grid-2">
+          <label class="field"><span>Baud</span><select name="serial.baud" data-enum="bauds"></select></label>
+          <label class="field"><span>Data bits</span><select name="serial.data_bits" data-enum="dataBits"></select></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Parity</span><select name="serial.parity" data-enum="parities"></select></label>
+          <label class="field"><span>Stop bits</span><select name="serial.stop_bits" data-enum="stopBits"></select></label>
+        </div>
+        <label class="field"><span>Flow control</span><select name="serial.flow_control" data-enum="flowControls"></select></label>
+        <div class="grid-2">
+          <label class="field"><span>XON char</span><input name="serial.xon_char" type="number" min="0" max="255"></label>
+          <label class="field"><span>XOFF char</span><input name="serial.xoff_char" type="number" min="0" max="255"></label>
+        </div>
+        <div class="row gap-sm wrap">
+          <label class="inline"><input name="serial.assert_dtr" type="checkbox"> Assert DTR</label>
+          <label class="inline"><input name="serial.assert_rts" type="checkbox"> Assert RTS</label>
+          <label class="inline" title="Let the NPort enforce XON/XOFF and RTS/CTS itself (recommended). Off = host-side only."><input name="serial.device_flow_control" type="checkbox"> Flow control on device</label>
+        </div>
+        <label class="field"><span>TX FIFO (1 = off, 16 = default)</span><input name="serial.tx_fifo" type="number" min="1" max="128" title="UART transmit FIFO depth on the NPort. Use 1 for old controls with no receive buffer."></label>
+        <label class="inline" title="If you want parity errors reported, mark the Check parity box. Every time an error occurs, the specified character is inserted into the file at the receiving point."><input name="serial.check_parity" type="checkbox"> Check parity</label>
+        <label class="field"><span>Insert on parity error</span><input name="serial.parity_insert" type="text" placeholder="\35" title="Use this field to specify a character to insert in the received file, if a parity error occurs while receiving data from the remote machine. If the field is left blank, no character is inserted."></label>
+      </fieldset>
+
+      <fieldset><legend>Preprocessing</legend>
+        <div class="row gap-sm wrap">
+          <label class="inline"><input name="send.uppercase" type="checkbox"> Uppercase</label>
+          <label class="inline"><input name="send.strip_comments" type="checkbox"> Strip comments</label>
+          <label class="inline"><input name="send.strip_blank_lines" type="checkbox"> Strip blank lines</label>
+          <label class="inline"><input name="send.strip_spaces" type="checkbox"> Strip spaces</label>
+        </div>
+        <div class="row gap-sm wrap">
+          <label class="inline" title="Check this field if ASCII 0's should be removed from the transmitted data."><input name="send.remove_nulls" type="checkbox"> Remove ASCII 0's</label>
+          <label class="inline" title="Converts tabs (ASCII 9) to spaces (ASCII 32) before sending the file to the remote machine."><input name="send.tabs_to_spaces" type="checkbox"> Replace tabs with spaces</label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>CR/LF</span><select name="send.line_ending" data-enum="lineEndings" title="The carriage-return / line-feed character(s) sent after every line."></select></label>
+          <label class="field"><span>Custom CR/LF</span><input name="send.line_ending_custom" type="text" placeholder="\13 \10" title="Used when CR/LF is set to Custom. This is how you send files with a non-standard linefeed such as \13 \10 \10 or \10 \13."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Start trigger</span><input name="send.start_trigger" type="text" title="The DNC will start transmitting data from the first line in the file that contains the specified start trigger. If no start trigger is specified, the transmission will start at the beginning of the file."></label>
+          <label class="field"><span>End trigger</span><input name="send.end_trigger" type="text" title="Use this field to specify the end trigger. The line containing the end trigger is not transmitted."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Omit lines containing</span><input name="send.omit_lines_containing" type="text" title="Excludes lines containing one or more selected characters. Any line containing one of these characters will not be transmitted."></label>
+          <label class="field"><span>Remove characters</span><input name="send.remove_chars" type="text" title="Use this field to specify characters that should be removed from the transmitted data."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Send at start of feed</span><input name="send.start_chars" type="text" placeholder="%\n" title="Here you can specify a character or a string that should be sent at the start of the transmission."></label>
+          <label class="field"><span>Send at end of feed</span><input name="send.end_chars" type="text" placeholder="%\n" title="Specify a character or a string that should be sent at the end of the transmission."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Leading chars</span><input name="send.leading_chars" type="text"></label>
+          <label class="field"><span>Trailing chars</span><input name="send.trailing_chars" type="text"></label>
+        </div>
+        <label class="field"><span>EOB chars</span><input name="send.eob_chars" type="text" placeholder="appended to every line"></label>
+        <label class="inline"><input name="send.line_numbers" type="checkbox"> Renumber lines</label>
+        <div class="grid-2">
+          <label class="field"><span>Block number character</span><input name="send.line_number_prefix" type="text" placeholder="N"></label>
+          <label class="field"><span>Start</span><input name="send.line_number_start" type="number" min="0"></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Interval</span><input name="send.line_number_increment" type="number" min="1"></label>
+          <label class="field"><span>Digits (0 = as needed)</span><input name="send.line_number_digits" type="number" min="0" max="8" title="Zero-pad block numbers to this many digits, e.g. 4 gives N0010."></label>
+        </div>
+        <p class="hint">Escapes accepted in character fields: <code>\n \r \t \\ \xNN</code> and CIMCO's
+          decimal form <code>\NN</code> — enter the character itself (<code>$</code> = ASCII 36) or its
+          value (<code>\36</code>). ASCII 13 and 10 have no printable form, so they must be written
+          <code>\13</code> and <code>\10</code>.</p>
+      </fieldset>
+
+      <fieldset><legend>Send behaviour</legend>
+        <label class="field"><span>Wait for ready</span><select name="send.wait_for_ready" data-enum="waitModes"></select></label>
+        <div class="grid-2">
+          <label class="field"><span>Ready timeout (s)</span><input name="send.ready_timeout_s" type="number" min="1" max="3600"></label>
+          <label class="field"><span>Chunk size (B)</span><input name="send.chunk_size" type="number" min="1" max="8192"></label>
+          <label class="field" title="Bytes allowed to wait inside the NPort before the next chunk is handed over. Keeps the progress bar honest and Stop quick. 0 = off."><span>Device queue limit (B)</span><input name="send.device_queue_limit" type="number" min="0" max="65535"></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Delay between characters (ms)</span><input name="send.char_delay_ms" type="number" min="0" max="1000"></label>
+          <label class="field"><span>Delay before each line (ms)</span><input name="send.line_delay_ms" type="number" min="0" max="10000" title="Specify the time in milliseconds to wait before it begins transmitting a new line."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Break after receiving characters</span><input name="send.break_count" type="number" min="0" max="1000000" title="Ends the transmission to the control after the specified number of characters have been received back from it, even if the program is not finished. If this field is left at 0, any incoming characters are ignored."></label>
+          <label class="field"><span>Handshake timeout (seconds)</span><input name="send.handshake_timeout_s" type="number" min="0" max="3600" title="The time to wait after receiving a stop flow signal (XOff and/or CTS Low) from a remote machine before terminating the connection. If the timeout value is 0, it will wait until a start flow is received."></label>
+        </div>
+      </fieldset>
+
+      <fieldset><legend>Send / Recv directories</legend>
+        <label class="field"><span>Default send directory</span><input name="send.default_folder" type="text" title="Specify the default send path in this field. Browse… on the Send page opens here."></label>
+        <div class="grid-2">
+          <label class="field"><span>Default extension</span><input name="send.default_extension" type="text" placeholder=".nc" title="Use this field to specify the default extension of files to be sent."></label>
+          <label class="field"><span>Additional extensions</span><input name="send.additional_extensions" type="text" placeholder=".tap .ncf" title="Use this field to specify additional extensions for files to be sent."></label>
+        </div>
+      </fieldset>
+
+      <fieldset><legend>Receive</legend>
+        <label class="field"><span>Default receive directory</span><input name="receive.folder" type="text" title="Specify the default receive directory for programs punched out by the control."></label>
+        <label class="field"><span>Filename pattern</span><input name="receive.filename_pattern" type="text"></label>
+        <p class="hint">Placeholders: <code>{machine} {program} {date} {time} {datetime} {n}</code></p>
+        <div class="grid-2">
+          <label class="field"><span>Default extension</span><input name="receive.append_extension" type="text" placeholder=".nc" title="Use this field to specify the default extension for received files."></label>
+          <label class="field"><span>Additional extensions</span><input name="receive.additional_extensions" type="text" title="Use this field to specify additional extensions for received files."></label>
+        </div>
+        <label class="field"><span>If the file exists</span><select name="receive.overwrite" data-enum="overwritePolicies"></select></label>
+        <div class="grid-2">
+          <label class="field"><span>CR/LF</span><select name="receive.line_ending" data-enum="receiveLineEndings" title="The line feed character(s) the control sends. With Auto the DNC detects the CR/LF combination used. If the remote machine does not use any of the standard combinations of ASCII 13 and ASCII 10, enter the combination manually."></select></label>
+          <label class="field"><span>Custom CR/LF</span><input name="receive.line_ending_custom" type="text" placeholder="\13 \10" title="Used when CR/LF is set to Custom."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Control dialect</span><select name="receive.dialect" data-enum="dialects" title="Used by Insert spaces: word-addressed dialects (ISO, Fanuc, Haas, Siemens, Okuma) get a space before each address; conversational ones (Heidenhain, Mazatrol) are left as punched."></select></label>
+          <label class="inline"><input name="receive.insert_spaces" type="checkbox" title="Re-insert the spaces the control stripped when punching: G01X10.Y-5. becomes G01 X10. Y-5."> Insert spaces</label>
+        </div>
+        <label class="inline"><input name="receive.trim_trailing_spaces" type="checkbox" title="Some controls punch a space before every end-of-block; drop it."> Trim trailing spaces</label>
+        <label class="field"><span>Save file linefeed</span><select name="receive.save_line_ending" data-enum="saveLineEndings" title="The line ending written to disk, which is deliberately separate from the one received on the wire. Keep writes back whatever arrived."></select></label>
+        <div class="grid-2">
+          <label class="field"><span>Start trigger</span><input name="receive.start_trigger" type="text" placeholder="e.g. %" title="Start triggers are characters indicating that saving of incoming data should start. If no start trigger is used, saving starts at the beginning of the file. The start trigger is the first sequence of characters received."></label>
+          <label class="field"><span>Start trigger mode</span><select name="receive.start_trigger_mode" data-enum="startTriggerModes"></select></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>End trigger</span><input name="receive.end_trigger" type="text" placeholder="e.g. %" title="End triggers are characters indicating that saving of incoming data should stop. If no end trigger is used, saving continues until a timeout occurs. The end trigger is the last sequence of characters received."></label>
+          <label class="field"><span>End trigger mode</span><select name="receive.end_trigger_mode" data-enum="endTriggerModes"></select></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Omit lines containing</span><input name="receive.omit_lines_containing" type="text" title="Excludes lines containing one or more selected characters. Any line containing one of these characters will be discarded when received."></label>
+          <label class="field"><span>Omit lines with string</span><input name="receive.omit_lines_with_string" type="text" title="Remove lines containing the specified string."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Remove characters</span><select name="receive.remove_chars" data-enum="receiveRemoveChars" title="Selected characters will automatically be removed from the received stream."></select></label>
+          <label class="field"><span>Custom characters to remove</span><input name="receive.remove_chars_custom" type="text" title="Used when Remove characters is set to Custom list."></label>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>Receive timeout (seconds)</span><input name="receive.idle_timeout_s" type="number" min="0" max="3600" title="The time delay after the last character has been received, until the receiving operation is concluded. A value of 0 means no timeout: if no end trigger is specified you will have to stop the receive by hand."></label>
+          <label class="field"><span>Overall timeout (s)</span><input name="receive.overall_timeout_s" type="number" min="5" max="86400" title="A hard cap on the whole capture. Not a CIMCO setting - it stops a forgotten receive running all night."></label>
+        </div>
+        <label class="field"><span>Send at start of reception</span><input name="receive.start_chars" type="text" title="Specify a string that should be sent to the CNC when a receive operation is started."></label>
+        <div class="row gap-sm wrap">
+          <label class="inline" title="When this field is checked, an XOn character is sent when ready to receive data."><input name="receive.send_xon" type="checkbox"> Send XOn</label>
+          <label class="inline" title="Check this field if empty lines should not be saved."><input name="receive.omit_empty_lines" type="checkbox"> Omit empty lines</label>
+        </div>
+      </fieldset>
+
+      <fieldset><legend>Notes</legend>
+        <label class="field"><textarea name="notes" rows="2"></textarea></label>
+      </fieldset>
+
+      <div id="machineErrors" class="errors hidden"></div>
+      <div class="actionbar">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" id="btnMachineRevert" class="btn">Revert</button>
+        <button type="button" id="btnMachineTest" class="btn">Test connection</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- ================= LOG ================= -->
+  <section class="page" data-page="log">
+    <div class="card">
+      <div class="row gap-sm">
+        <select id="logLevel" class="grow-1">
+          <option value="DEBUG">All</option>
+          <option value="INFO" selected>Info and above</option>
+          <option value="WARNING">Warnings and errors</option>
+          <option value="ERROR">Errors only</option>
+        </select>
+        <input id="logFilter" type="search" placeholder="filter text" class="grow-2">
+      </div>
+      <div class="row gap-sm">
+        <button id="btnLogClear" class="btn btn-sm">Clear view</button>
+        <button id="btnLogOpen" class="btn btn-sm">Show log file</button>
+        <span id="logCounts" class="muted small"></span>
+      </div>
+    </div>
+    <div class="card grow">
+      <div id="logList" class="log-list"></div>
+    </div>
+  </section>
+
+  <!-- ================= ABOUT ================= -->
+  <section class="page" data-page="about">
+    <div class="card">
+      <h2 class="title">Moxa DNC <span id="aboutVersion" class="muted"></span></h2>
+      <p class="muted small">
+        Sends post-processed NC programs to a CNC control over RS-232 through a
+        Moxa NPort using the device's native TCP protocol — no virtual COM port driver.
+      </p>
+      <dl class="kv">
+        <dt>Host</dt><dd id="aboutHost" class="mono">—</dd>
+        <dt>Settings</dt><dd id="aboutSettings" class="mono ellipsis">—</dd>
+        <dt>Log file</dt><dd id="aboutLog" class="mono ellipsis">—</dd>
+      </dl>
+      <div id="aboutProtocol" class="notice"></div>
+    </div>
+    <div class="card">
+      <h2 class="title">Global</h2>
+      <label class="field"><span>Log level</span>
+        <select id="globalLogLevel">
+          <option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option>
+        </select>
+      </label>
+      <label class="inline"><input id="globalConfirm" type="checkbox"> Confirm before sending from the toolbar</label>
+    </div>
+  </section>
+</main>
+
+<!-- overwrite prompt -->
+<div id="overwriteModal" class="modal hidden">
+  <div class="modal-box">
+    <h3>File already exists</h3>
+    <p id="overwriteText" class="small"></p>
+    <div class="actionbar">
+      <button id="owOverwrite" class="btn btn-danger">Overwrite</button>
+      <button id="owRename" class="btn btn-primary">Save as new</button>
+      <button id="owCancel" class="btn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

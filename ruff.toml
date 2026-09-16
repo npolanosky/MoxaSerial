@@ -1,0 +1,36 @@
+# Ruff configuration for the MoxaSerial Fusion add-in.
+# Fusion 360 embeds CPython 3.12 - target that, stdlib only.
+target-version = "py312"
+line-length = 100
+indent-width = 4
+
+exclude = [
+    "research",
+    ".venv",
+    "__pycache__",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+]
+ignore = [
+    "E501",   # line length is handled by the formatter
+    "B008",
+    "SIM105", # contextlib.suppress is slower in hot loops
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["E402"]
+"moxaserial/ui/*" = ["E402"]   # adsk is imported lazily inside functions on purpose
+
+[format]
+quote-style = "double"
+indent-style = "space"
