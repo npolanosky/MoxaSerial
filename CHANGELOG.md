@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This project uses
 [semantic versioning](https://semver.org/).
 
+## 0.1.1 - 2026-09-16
+
+### Fixed
+
+- Windows: the palette failed to load (`ERR_INVALID_URL`) because the page was passed to Fusion as a backslash path; it is now a `file:///` URI.
+
 ## 0.1.0
 
 First public release.

@@ -6,7 +6,7 @@
     "description": {
         "": "DNC over RS-232 through a Moxa NPort device using the native Moxa TCP protocol. Send posted NC programs to a CNC control and receive programs back."
     },
-    "version": "0.1.0",
+    "version": "0.1.1",
     "runOnStartup": true,
     "supportedOS": "windows|mac",
     "editEnabled": true

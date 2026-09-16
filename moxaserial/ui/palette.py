@@ -55,6 +55,18 @@ def palette_html_path() -> str:
     return os.path.join(root, "resources", "palette", "index.html")
 
 
+def palette_html_url() -> str:
+    """The palette page as a ``file:///`` URL.
+
+    Fusion accepts a plain path on macOS, but on Windows a backslash drive
+    path becomes a malformed ``file:///`` URL that Chromium refuses
+    (ERR_INVALID_URL). A proper RFC 8089 URI works on both.
+    """
+    from pathlib import Path
+
+    return Path(palette_html_path()).resolve().as_uri()
+
+
 class PaletteBridge:
     """Owns the palette object and both directions of the message bridge."""
 
@@ -119,7 +131,7 @@ class PaletteBridge:
             palette = ui.palettes.add(
                 PALETTE_ID,
                 PALETTE_NAME,
-                html,
+                palette_html_url(),
                 True,   # isVisible
                 True,   # showCloseButton
                 True,   # isResizable

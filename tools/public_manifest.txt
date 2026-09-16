@@ -71,3 +71,4 @@ installers/**
 install.py
 tools/bump_version.py
 tools/make_release_zip.py
+tools/publish_public.sh
