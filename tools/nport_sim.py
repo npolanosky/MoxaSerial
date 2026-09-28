@@ -174,6 +174,8 @@ class SimPort:
     last_alive: float = 0.0
     cnc_buffer_level: int = 0
     xoff_sent: bool = False
+    #: XON/XOFF characters the device consumed instead of forwarding.
+    flow_chars_swallowed: int = 0
     port_init_count: int = 0
     _last_cnc_drain: float = 0.0
     _last_consume: float = 0.0
@@ -193,8 +195,33 @@ class SimPort:
     def cnc_send(self, data: bytes) -> None:
         """The CNC transmits *data* towards the host."""
         with self.lock:
-            self.rx_queue += data
+            self.rx_queue += self._through_device_flow(data)
         self._pump_rx()
+
+    def _through_device_flow(self, data: bytes) -> bytes:
+        """What the NPort forwards to the host out of *data* from the CNC.
+
+        With transmit software flow control enabled on the device (PORT_INIT
+        XON/XOFF flags), the firmware acts on XON/XOFF itself - it stops or
+        restarts its own transmitter - and, like any UART driver with IXON,
+        does not deliver those characters upstream. That is exactly why a
+        "wait for XON" host must ask the device to pass them through.
+        Caller holds ``self.lock``.
+        """
+        s = self.settings
+        if not (s.xon_enabled or s.xoff_enabled) or not self.sim.device_consumes_flow_chars:
+            return data
+        out = bytearray()
+        for byte in data:
+            if byte == s.xoff_char:
+                self.xoff_sent = True
+                self.flow_chars_swallowed += 1
+            elif byte == s.xon_char:
+                self.xoff_sent = False
+                self.flow_chars_swallowed += 1
+            else:
+                out.append(byte)
+        return bytes(out)
 
     def modem_status_byte(self) -> int:
         msr = 0
@@ -377,10 +404,10 @@ class SimPort:
             if cnc.software_flow:
                 if not self.xoff_sent and level >= cnc.xoff_at:
                     self.xoff_sent = True
-                    self.rx_queue.append(self.settings.xoff_char)
+                    self.rx_queue += self._through_device_flow(bytes([self.settings.xoff_char]))
                 elif self.xoff_sent and level <= cnc.xon_at:
                     self.xoff_sent = False
-                    self.rx_queue.append(self.settings.xon_char)
+                    self.rx_queue += self._through_device_flow(bytes([self.settings.xon_char]))
             if cnc.hardware_flow:
                 # Hysteresis: drop CTS at xoff_at, raise it again at xon_at.
                 want_cts = level < cnc.xoff_at if cnc.cts else level <= cnc.xon_at
@@ -448,6 +475,10 @@ class NPortSimulator:
         #: Off by default so the existing engine tests keep their simple
         #: command-only fixtures; the discovery probe tests turn it on.
         self.strict_aspp = strict_aspp
+        #: Real firmware behaviour: with device-side XON/XOFF enabled the
+        #: NPort consumes the control's XON/XOFF rather than forwarding them.
+        #: Test-visible so a case can prove the host never sees the XON.
+        self.device_consumes_flow_chars = True
         self.ports: list[SimPort] = [SimPort(i, self) for i in range(ports)]
         self.cmd_ports: list[int] = []
         self.data_ports: list[int] = []

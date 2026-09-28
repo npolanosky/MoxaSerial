@@ -825,6 +825,19 @@ class ConfigStore:
             self.save()
         return self.data
 
+    def transform(self, fn: Any, save: bool = True) -> dict[str, Any]:
+        """Atomic read-modify-write: ``fn(copy_of_current) -> new_document``.
+
+        The whole step runs under the store lock, so a concurrent writer
+        (the update checker's bookkeeping, a UI save) cannot slip in between
+        the read and the replace and be lost.
+        """
+        with self._lock:
+            self._data = normalize_settings(fn(copy.deepcopy(self._data)))
+        if save:
+            self.save()
+        return self.data
+
     def get(self, key: str, fallback: Any = None) -> Any:
         with self._lock:
             return copy.deepcopy(self._data.get(key, fallback))

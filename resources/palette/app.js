@@ -656,6 +656,15 @@ function wireMachinesPage() {
 
   $('#btnMachineRevert').addEventListener('click', () => selectMachineForEdit(S.editingId));
 
+  /* --- settings import/export: one machine --- */
+  $('#btnMachineExport').addEventListener('click', async () => {
+    const m = S.machines.find((x) => x.id === S.editingId);
+    if (!m) { toast('Save the machine first, then export it.', 'warn'); return; }
+    const data = await call('settings.export', { scope: 'machine', machineId: m.id });
+    if (data && !data.cancelled) toast('Exported "' + m.name + '" to ' + baseName(data.path), 'success');
+  });
+  /* --- end settings import/export --- */
+
   /* --- direct serial ports --- */
   $('#btnSerialRefresh').addEventListener('click', () => { S.serialPortsLoaded = false; refreshSerialPorts(); });
   $('#serialPortList').addEventListener('change', (e) => {
@@ -667,7 +676,9 @@ function wireMachinesPage() {
   $('#btnMachineTest').addEventListener('click', async () => {
     const btn = $('#btnMachineTest');
     btn.disabled = true; btn.textContent = 'Testing…';
-    const data = await call('machines.test', { id: S.editingId });
+    // Send the form itself: a new machine is not in the store until it is
+    // saved, and unsaved edits are exactly what the operator wants tested.
+    const data = await call('machines.test', { id: S.editingId, machine: readMachineForm() });
     if (!data || !data.started) { btn.disabled = false; btn.textContent = 'Test connection'; }
     // Result arrives as a 'machines.testResult' push (see dispatch).
   });
@@ -1150,7 +1161,71 @@ function wireAboutPage() {
     call('settings.save', { settings: { confirm_before_send: e.target.checked } });
   });
   wireUpdateCard();
+  wireImportExport();
 }
+
+/* ===== settings import/export : begin ===== */
+function baseName(path) {
+  return String(path || '').split(/[\\/]/).pop();
+}
+
+function wireImportExport() {
+  $('#btnSettingsExport').addEventListener('click', async () => {
+    const data = await call('settings.export', { scope: 'all' });
+    if (!data || data.cancelled) return;
+    toast('Exported ' + data.machines.length + ' machine(s) to ' + baseName(data.path), 'success');
+  });
+  $('#btnSettingsImport').addEventListener('click', async () => {
+    const preview = await call('settings.importPreview', {});
+    if (!preview || preview.cancelled) return;
+    showImportModal(preview);
+  });
+  $('#imCancel').addEventListener('click', () => $('#importModal').classList.add('hidden'));
+  $('#imMerge').addEventListener('click', () => runImport('merge'));
+  $('#imReplace').addEventListener('click', () => runImport('replace'));
+}
+
+let importPending = null;
+
+function showImportModal(preview) {
+  importPending = preview;
+  const single = preview.scope === 'machine';
+  const list = preview.machines.length ? preview.machines.join(', ') : 'no machines';
+  let text = baseName(preview.path) + ' — exported ' + (preview.exportedAt || 'unknown date')
+    + ' on ' + (preview.platform === 'win32' ? 'Windows' : preview.platform === 'darwin' ? 'macOS' : preview.platform)
+    + (preview.appVersion ? ' (MoxaSerial ' + preview.appVersion + ')' : '') + '.\n'
+    + (single ? 'Machine: ' : 'Machines: ') + list + '.';
+  if (preview.crossPlatform) text += '\nFolder paths and serial ports from the other operating system will be adjusted.';
+  text += single
+    ? '\nMerge adds it, or updates the machine with the same id.'
+    : '\nMerge adds or updates machines and copies the options. Replace all throws away the machines you have now.';
+  $('#importText').textContent = text;
+  $('#imReplace').classList.toggle('hidden', single);
+  $('#importModal').classList.remove('hidden');
+}
+
+async function runImport(mode) {
+  const preview = importPending;
+  $('#importModal').classList.add('hidden');
+  if (!preview) return;
+  const data = await call('settings.import', { path: preview.path, mode });
+  importPending = null;
+  if (!data) return;
+  if (data.state) applyState(data.state);
+  const r = data.report || {};
+  const notes = (r.notes || []).concat(r.warnings || []);
+  const box = $('#importNotes');
+  if (notes.length) {
+    box.textContent = '';
+    notes.forEach((n) => box.appendChild(el('div', null, n)));
+    box.classList.remove('hidden');
+  } else {
+    box.classList.add('hidden');
+  }
+  toast('Imported: ' + (r.added || []).length + ' added, ' + (r.updated || []).length + ' updated'
+    + (notes.length ? ' — see notes below' : ''), 'success');
+}
+/* ===== settings import/export : end ===== */
 
 /* ===== auto-update : begin ===== */
 const U = { latest: '', notesUrl: '', available: false, dev: false };

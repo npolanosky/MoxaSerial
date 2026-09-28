@@ -3,6 +3,36 @@
 All notable changes to this project are documented here. This project uses
 [semantic versioning](https://semver.org/).
 
+## 0.2.1 - 2026-09-28
+
+### Added
+
+* **Settings export / import** (#1). About → *Backup & transfer* exports every
+  machine and option to a JSON file, or imports one; the Machines page can
+  export a single profile. Imports merge by machine id (or replace
+  everything). Folder paths under the exporting user's home are re-homed
+  under yours; a Windows path arriving on macOS (or the reverse) falls back
+  to a safe default and is listed in the import notes; a serial port name
+  from the other operating system is cleared. Web-console credentials stay
+  in the keychain and are never written to the file.
+
+### Fixed
+
+* **"Wait for XON" never started with flow control on the device** (#2).
+  With *Flow control on device* ticked (the shipped default) the NPort
+  firmware acts on the control's DC1 itself and does not forward it, so the
+  sender waited until the timeout. The device is now put in pass-through
+  for the wait and given XON/XOFF back the moment the control's XON is seen.
+  The same applies to direct serial ports (the OS driver's IXON behaves the
+  same way). The simulator now models the firmware's behaviour so the case is
+  covered by tests.
+* A DC3 received while waiting for XON no longer leaves the transfer
+  blocked after the XON arrives.
+* **Test connection on an unsaved machine** (#3) reported "No machine with
+  id …". The button now tests the form as it stands, saved or not.
+* The About page and the settings export reported the package's own version
+  (0.1.0) rather than the add-in's; both now follow `MoxaSerial.manifest`.
+
 ## 0.2.0 - 2026-09-16
 
 ### Added

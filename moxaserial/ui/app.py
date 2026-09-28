@@ -85,6 +85,41 @@ class FusionHost(Host):
             log.debug("Folder dialog failed", exc_info=True)
         return ""
 
+    # --- settings import/export -----------------------------
+    def pick_open_path(self, title: str = "Select a file", filter: str = "All files (*.*)") -> str:
+        try:
+            import adsk.core  # type: ignore
+
+            ui = adsk.core.Application.get().userInterface
+            dlg = ui.createFileDialog()
+            dlg.title = title
+            dlg.filter = filter
+            dlg.isMultiSelectEnabled = False
+            if dlg.showOpen() == adsk.core.DialogResults.DialogOK:
+                return dlg.filename
+        except Exception:
+            log.debug("Open dialog failed", exc_info=True)
+        return ""
+
+    def pick_save_path(
+        self, title: str = "Save as", default_name: str = "", filter: str = "All files (*.*)"
+    ) -> str:
+        try:
+            import adsk.core  # type: ignore
+
+            ui = adsk.core.Application.get().userInterface
+            dlg = ui.createFileDialog()
+            dlg.title = title
+            dlg.filter = filter
+            if default_name:
+                dlg.initialFilename = default_name
+            if dlg.showSave() == adsk.core.DialogResults.DialogOK:
+                return dlg.filename
+        except Exception:
+            log.debug("Save dialog failed", exc_info=True)
+        return ""
+    # ---------------------------------------------------------
+
     def last_posted_file(self) -> dict[str, Any]:
         return lastpost.find_last_posted(self.store.get("watch_folders", []))
 

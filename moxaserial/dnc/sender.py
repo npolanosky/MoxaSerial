@@ -54,7 +54,7 @@ from moxaserial.dnc.preprocess import (
 )
 from moxaserial.events import EventBus
 from moxaserial.log import get_logger
-from moxaserial.transport.base import ModemStatus, Transport, TransportError
+from moxaserial.transport.base import FlowControl, ModemStatus, Transport, TransportError
 
 log = get_logger("sender")
 
@@ -292,11 +292,21 @@ class Sender:
             if transport is None:
                 transport = self._make_transport(machine)
             self._transport = transport
+            send_cfg = machine.get("send", {})
+            if (
+                str(send_cfg.get("wait_for_ready", "immediate")).lower() == "xon"
+                and FlowControl.from_machine(machine).software
+            ):
+                # The NPort firmware / OS driver would consume the control's
+                # XON itself and we would never see it (GitHub issue #2).
+                # Pass-through until the XON arrives; host-side XON/XOFF
+                # handling below covers the wait.
+                transport.suspend_software_flow()
+                log.info("Device-side XON/XOFF suspended until the control sends XON.")
             if not transport.is_open:
                 self._open_with_retry(transport, machine)
             transport.purge(rx=True, tx=False)
 
-            send_cfg = machine.get("send", {})
             if not self._wait_for_ready(transport, machine, send_cfg):
                 return  # _wait_for_ready set the terminal state already
 
@@ -315,11 +325,37 @@ class Sender:
             self._fail(f"Unexpected error: {exc}", machine, file_path)
         finally:
             if owns_transport and self._transport is not None:
+                # Close first: resuming on a dead link would block on the
+                # command timeout. On a closed transport resume only clears
+                # the flag.
                 try:
                     self._transport.close()
                 except Exception:
                     pass
+            if self._transport is not None:
+                # A transport handed in from outside is reused: never leave it
+                # in pass-through. (No-op unless we suspended it.)
+                try:
+                    self._transport.resume_software_flow()
+                except Exception:  # noqa: BLE001
+                    pass
             self._transport = None
+
+    def _resume_device_flow(self, transport: Transport) -> None:
+        """Hand XON/XOFF back to the device once the control's XON was seen."""
+        if not transport.software_flow_suspended:
+            return
+        try:
+            transport.resume_software_flow()
+            log.info("Device-side XON/XOFF re-enabled.")
+        except TransportError as exc:
+            # Not fatal: the host-side handling in _stream still honours
+            # XOFF/XON; the device just will not stop on its own.
+            log.warning("Could not re-enable device-side XON/XOFF: %s", exc)
+            self._emit_log(
+                "Could not re-enable flow control on the device; using host-side XON/XOFF.",
+                level="WARNING",
+            )
 
     def _make_transport(self, machine: dict[str, Any]) -> Transport:
         if self._transport_factory is not None:
@@ -431,11 +467,18 @@ class Sender:
                         self._update(rx=True)
                         log.info("RX while waiting for %s: %s", label, data.hex(" "))
                         self._emit_log(f"Control sent: {data.hex(' ')}")
-                        if flow.xon in data or DC2 in data:
+                        # Last control character wins, as a UART sees it:
+                        # "XON ... XOFF" in one read means the control is
+                        # holding again, so keep waiting for the next XON.
+                        for byte in data:
+                            if byte == flow.xon or byte == DC2:
+                                self._xoff = False
+                            elif byte == flow.xoff:
+                                self._xoff = True
+                        if (flow.xon in data or DC2 in data) and not self._xoff:
                             log.info("Received XON/DC2 - starting.")
+                            self._resume_device_flow(transport)
                             return True
-                        if flow.xoff in data:
-                            self._xoff = True
             except TransportError as exc:
                 # A device server on Wi-Fi, or a port restart, can drop us
                 # while we sit here for minutes. Reconnect and keep waiting

@@ -1132,8 +1132,18 @@ class SerialTransport(Transport):
             self._backend.set_line_params(params)
 
     def _do_set_flow_control(self, flow: FlowControl) -> None:
-        if self.is_open:
-            self._backend.set_flow_control(flow)
+        if not self.is_open:
+            return
+        self._backend.set_flow_control(flow)
+        # The Windows backend rewrites the whole DCB, and its non-handshake
+        # setting for DTR/RTS is "asserted". At open the base class sets the
+        # lines right after this; a mid-session change (suspend/resume of
+        # XON/XOFF) has nothing after it, so restore the operator's choice.
+        mode = str(flow.mode).lower()
+        if mode != "dtrdsr":
+            self._backend.set_dtr(bool(self._dtr))
+        if mode not in ("rtscts", "both"):
+            self._backend.set_rts(bool(self._rts))
 
     def _do_set_dtr(self, state: bool) -> None:
         self._dtr = bool(state)

@@ -32,6 +32,7 @@ inside functions, so even those modules import cleanly off-Fusion.
 | `events.py` | Thread-safe pub/sub. Dotted topics matched exactly, by `prefix.*`, or `*`. A subscriber exception is caught and routed to an error hook — a bad listener must never kill an engine thread mid-send. |
 | `log.py` | `RotatingFileHandler` (1 MB × 3) + a 2000-entry ring buffer the Log page reads + a handler republishing every record as `log.entry`. |
 | `config.py` | Versioned JSON settings (§5). Normalisation, validation, migration, atomic saves. |
+| `portable.py` | Settings export / import envelope: machines merge by id, paths re-homed or defaulted across macOS/Windows, credentials never included. Pure functions; the bridge does the I/O. |
 | `bridge.py` | The action router (§4). Owns the store, the sender, the receiver, and a `Host` abstraction for the few things only the embedding app can do. |
 | `update.py` | Auto-update (§8): GitHub Releases check, download + SHA verify, folder swap with rollback, and the `UpdateService` that schedules it all. Fusion-free. |
 | `discovery.py` | Finding NPorts and probing their serial ports (§9). UDP search on port 4800, a TCP fallback sweep, and a bounded per-port ASPP probe. |
@@ -123,10 +124,13 @@ reply string must be **non-empty**; Fusion treats `""` as failure.
 | `machines.delete` | `{id}` | `{removed, machines}` |
 | `machines.duplicate` | `{id}` | `{machine, machines}` |
 | `machines.setDefault` | `{id}` | `{settings}` |
-| `machines.test` | `{id, sync?}` | `{started, machineId}`; the result arrives as a `machines.testResult` push. Runs on a worker thread so a wrong IP cannot freeze Fusion; `sync:true` returns inline (tests, dev server). |
+| `machines.test` | `{id?, machine?, sync?}` | `{started, machineId}`; the result arrives as a `machines.testResult` push. `machine` is the form as it stands (validated, not saved) so a new or edited profile can be tested before saving. Runs on a worker thread so a wrong IP cannot freeze Fusion; `sync:true` returns inline (tests, dev server). |
 | `serial.listPorts` | `{}` | `{ports:[{device, label, description}]}` — serial ports on this computer, for the machine form's port dropdown (§7). Never fails: an empty list just means "type the name in". |
 | `settings.get`, `settings.save` | `{}`, `{settings}` | `{settings, enums}`, `{settings}` |
 | `theme.set` | `{theme}` | `{settings}` |
+| `settings.export` | `{scope: "all"\|"machine", machineId?, path?}` | `{path, scope, machines}` or `{path:"", cancelled:true}` — writes a `portable.py` envelope; `path` skips the save dialog. Credentials are never included. |
+| `settings.importPreview` | `{path?}` | `{path, scope, platform, appVersion, exportedAt, machines, crossPlatform}` or `{cancelled:true}` — what the UI shows before asking merge / replace. |
+| `settings.import` | `{path, mode: "merge"\|"replace", dryRun?}` | `{applied, report:{added, updated, notes, warnings, …}, state?}` — machines merge by id; folder paths are re-homed under this user, other-OS paths fall back to defaults, other-OS serial ports are cleared (`portable.py`). |
 | `file.browse` | `{}` | `{file}` or `{path:"", cancelled:true}` |
 | `file.lastPost` | `{}` | `{file, candidates?}` or `{file:{}, error, candidates}` |
 | `file.preview` | `{path?, machineId?}` | `{path, name, lines, lineCount, byteCount, droppedLines, sourceLines, truncated}` |

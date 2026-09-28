@@ -153,6 +153,7 @@
         <div class="row gap-sm">
           <button id="btnMachineNew" class="btn btn-sm">New</button>
           <button id="btnMachineDup" class="btn btn-sm">Duplicate</button>
+          <button id="btnMachineExport" class="btn btn-sm" title="Save this machine profile to a file you can import on another computer">Export…</button>
           <button id="btnMachineDel" class="btn btn-sm btn-danger">Delete</button>
         </div>
       </div>
@@ -255,7 +256,7 @@
         <div class="row gap-sm wrap">
           <label class="inline"><input name="serial.assert_dtr" type="checkbox"> Assert DTR</label>
           <label class="inline"><input name="serial.assert_rts" type="checkbox"> Assert RTS</label>
-          <label class="inline" title="Let the NPort enforce XON/XOFF and RTS/CTS itself (recommended). Off = host-side only."><input name="serial.device_flow_control" type="checkbox"> Flow control on device</label>
+          <label class="inline" title="Let the NPort enforce XON/XOFF and RTS/CTS itself (recommended). Off = host-side only. With &quot;Wait for XON&quot; the device is put in pass-through until the control's XON arrives, then flow control is handed back."><input name="serial.device_flow_control" type="checkbox"> Flow control on device</label>
         </div>
         <label class="field"><span>TX FIFO (1 = off, 16 = default)</span><input name="serial.tx_fifo" type="number" min="1" max="128" title="UART transmit FIFO depth on the NPort. Use 1 for old controls with no receive buffer."></label>
         <label class="inline" title="If you want parity errors reported, mark the Check parity box. Every time an error occurs, the specified character is inserted into the file at the receiving point."><input name="serial.check_parity" type="checkbox"> Check parity</label>
@@ -471,6 +472,23 @@
       </label>
       <label class="inline"><input id="globalConfirm" type="checkbox"> Confirm before sending from the toolbar</label>
     </div>
+
+    <!-- ===== settings import/export : begin ===== -->
+    <div class="card">
+      <h2 class="title">Backup &amp; transfer</h2>
+      <p class="muted small">
+        Export every machine profile and option to a file, or bring one in from
+        another computer. Folder paths are re-homed on import; a Windows path on
+        macOS (or the reverse) falls back to a safe default. Web-console passwords
+        stay in the keychain and are not exported.
+      </p>
+      <div class="actionbar">
+        <button id="btnSettingsExport" class="btn btn-sm">Export all…</button>
+        <button id="btnSettingsImport" class="btn btn-sm">Import…</button>
+      </div>
+      <div id="importNotes" class="notice hidden"></div>
+    </div>
+    <!-- ===== settings import/export : end ===== -->
   </section>
 </main>
 
@@ -483,6 +501,19 @@
       <button id="owOverwrite" class="btn btn-danger">Overwrite</button>
       <button id="owRename" class="btn btn-primary">Save as new</button>
       <button id="owCancel" class="btn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- settings import confirmation -->
+<div id="importModal" class="modal hidden">
+  <div class="modal-box">
+    <h3>Import settings</h3>
+    <p id="importText" class="small"></p>
+    <div class="actionbar">
+      <button id="imMerge" class="btn btn-primary">Merge</button>
+      <button id="imReplace" class="btn btn-danger">Replace all</button>
+      <button id="imCancel" class="btn">Cancel</button>
     </div>
   </div>
 </div>

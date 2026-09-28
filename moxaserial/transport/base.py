@@ -169,6 +169,14 @@ class Transport(abc.ABC):
         self._machine: dict[str, Any] = {}
         self._line = LineParams()
         self._flow = FlowControl()
+        # While True the *device* (NPort firmware, OS serial driver) is told
+        # not to act on XON/XOFF itself, so the characters reach us. See
+        # suspend_software_flow().
+        self._sw_flow_suspended = False
+        # Orders "flip the flag" + "tell the device" across threads (the UI
+        # thread's set_flow_control vs the sender's suspend/resume) without
+        # holding _lock, which the reader thread needs, during device I/O.
+        self._flow_apply_lock = threading.RLock()
         self.stats = TransportStats()
 
     # -- lifecycle -------------------------------------------------------
@@ -269,9 +277,63 @@ class Transport(abc.ABC):
         self._do_set_line_params(params)
 
     def set_flow_control(self, flow: FlowControl) -> None:
+        with self._flow_apply_lock:
+            with self._lock:
+                self._flow = flow
+            self._do_set_flow_control(self.effective_flow)
+
+    # -- device-side XON/XOFF suspension ----------------------------------
+    @property
+    def effective_flow(self) -> FlowControl:
+        """The flow control the device is actually asked to enforce.
+
+        Identical to :attr:`flow_control` unless software flow is suspended,
+        in which case the XON/XOFF half is dropped (``xonxoff`` -> ``none``,
+        ``both`` -> ``rtscts``). The XON/XOFF characters themselves are kept
+        so the sender's host-side handling still recognises them.
+        """
         with self._lock:
-            self._flow = flow
-        self._do_set_flow_control(flow)
+            flow, suspended = self._flow, self._sw_flow_suspended
+        if not suspended or not flow.software:
+            return flow
+        mode = "rtscts" if flow.mode == "both" else "none"
+        return FlowControl(mode=mode, xon=flow.xon, xoff=flow.xoff)
+
+    @property
+    def software_flow_suspended(self) -> bool:
+        with self._lock:
+            return self._sw_flow_suspended
+
+    def suspend_software_flow(self) -> None:
+        """Stop the device acting on XON/XOFF so they reach the host.
+
+        A UART driver (or the NPort firmware) with transmit software flow
+        control enabled *consumes* the XON/XOFF it receives: it starts and
+        stops its own transmitter and never delivers the characters
+        upstream. "Wait for XON" would then wait forever. Suspending puts
+        the device in pass-through until :meth:`resume_software_flow`; the
+        sender does its own host-side XON/XOFF handling in the meantime.
+        Safe to call before :meth:`open` - the flag is applied at open.
+        """
+        with self._flow_apply_lock:
+            with self._lock:
+                if self._sw_flow_suspended:
+                    return
+                self._sw_flow_suspended = True
+                is_open = self._open
+            if is_open:
+                self._do_set_flow_control(self.effective_flow)
+
+    def resume_software_flow(self) -> None:
+        """Hand XON/XOFF handling back to the device. No-op when not suspended."""
+        with self._flow_apply_lock:
+            with self._lock:
+                if not self._sw_flow_suspended:
+                    return
+                self._sw_flow_suspended = False
+                is_open = self._open
+            if is_open:
+                self._do_set_flow_control(self.effective_flow)
 
     def set_dtr(self, state: bool) -> None:
         self._do_set_dtr(state)

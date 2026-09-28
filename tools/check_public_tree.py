@@ -108,6 +108,9 @@ RULE_EXEMPT: dict[str, set[str]] = {
         "credential token",
     },
     "tests/test_secrets.py": {"password"},
+    # Exercises re-homing of paths exported from another computer, so it has
+    # to spell out made-up macOS, Windows and volume paths.
+    "tests/test_portable.py": {"macOS home path", "Windows user path", "mounted volume path"},
 }
 
 

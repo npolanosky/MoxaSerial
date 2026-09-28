@@ -117,10 +117,12 @@ def test_data_roundtrip_and_queue(sim):
         assert wait_until(lambda: bytes(port.received) == payload)
         assert t.drain(timeout=2.0) is True
         assert t.pending_tx() == 0
-        port.cnc_send(b"\x11")
-        assert t.read(16, timeout=1.0) == b"\x11"
+        # Not an XON: with the default (device-side) flow control the
+        # simulator, like the firmware, would consume that one.
+        port.cnc_send(b"OK")
+        assert t.read(16, timeout=1.0) == b"OK"
         assert t.stats.bytes_written == len(payload)
-        assert t.stats.bytes_read == 1
+        assert t.stats.bytes_read == 2
     finally:
         t.close()
 
@@ -392,4 +394,96 @@ def test_wait_for_xon_survives_a_connection_drop(sim):
     port.cnc_send(b"\x11")
     assert wait_until(lambda: sender.state.is_terminal, timeout=10), sender.snapshot()
     assert sender.state is SendState.DONE
+    assert bytes(port.received).endswith(b"G0 X0\n")
+
+
+# --------------------------------------------------------------------------
+# Device-side XON/XOFF vs "wait for XON" (GitHub issue #2)
+# --------------------------------------------------------------------------
+def test_device_side_flow_control_consumes_xon_unless_suspended(sim):
+    """With XON/XOFF enforced on the NPort the firmware acts on the control's
+    DC1 itself and never forwards it. suspend_software_flow() re-inits the
+    port in pass-through so the host sees it; resume hands it back."""
+    port = sim.ports[0]
+    m = machine_for(sim, flow_control="xonxoff", device_flow_control=True)
+    t = MoxaTransport()
+    t.open(m)
+    try:
+        assert port.settings.xon_enabled
+        port.cnc_send(b"\x11")
+        assert t.read(64, timeout=0.3) == b""
+        assert port.flow_chars_swallowed == 1
+
+        t.suspend_software_flow()
+        assert t.effective_flow.mode == "none" and t.flow_control.mode == "xonxoff"
+        assert not port.settings.xon_enabled and not port.settings.xoff_enabled
+        port.cnc_send(b"\x11")
+        assert wait_until(lambda: port.rx_queue == b"" , timeout=2)
+        assert t.read(64, timeout=1.0) == b"\x11"
+
+        t.resume_software_flow()
+        assert port.settings.xon_enabled and port.settings.xoff_enabled
+        assert t.effective_flow.mode == "xonxoff"
+    finally:
+        t.close()
+
+
+def test_wait_for_xon_works_with_device_side_flow_control(sim):
+    """The shipped default (flow control on the device) plus "wait for XON":
+    the sender must still start on the control's DC1 and must give flow
+    control back to the device before streaming."""
+    port = sim.ports[0]
+    m = machine_for(sim, flow_control="xonxoff", device_flow_control=True)
+    m["send"].update({"wait_for_ready": "xon", "ready_timeout_s": 10, "start_chars": "", "end_chars": "",
+                      "line_ending": "LF"})
+    bus = EventBus()
+    sender = Sender(bus)
+    sender.start(m, file_path="", text="G0 X0\n")
+    assert wait_until(lambda: sender.state is SendState.WAITING_READY, timeout=5)
+    assert not port.settings.xon_enabled  # pass-through while waiting
+    time.sleep(0.2)
+    port.cnc_send(b"\x13")  # a stray XOFF first must not block the start
+    time.sleep(0.2)
+    port.cnc_send(b"\x11")
+    assert wait_until(lambda: sender.state.is_terminal, timeout=10), sender.snapshot()
+    assert sender.state is SendState.DONE, sender.snapshot()
+    assert bytes(port.received).endswith(b"G0 X0\n")
+    assert port.settings.xon_enabled and port.settings.xoff_enabled  # handed back
+    assert port.flow_chars_swallowed == 0
+
+
+def test_wait_for_xon_times_out_without_the_fix(sim):
+    """Regression guard for the simulator model itself: if the device keeps
+    flow control while we wait, the XON never reaches the host."""
+    port = sim.ports[0]
+    m = machine_for(sim, flow_control="xonxoff", device_flow_control=True)
+    t = MoxaTransport()
+    t.open(m)
+    try:
+        port.cnc_send(b"\x11\x11")
+        assert t.read(64, timeout=0.3) == b""
+        assert port.flow_chars_swallowed == 2
+    finally:
+        t.close()
+
+
+def test_wait_for_xon_honours_a_trailing_xoff(sim):
+    """"XON then XOFF" in one read means the control is holding again: the
+    sender keeps waiting and starts on the next XON, never blocked."""
+    port = sim.ports[0]
+    m = machine_for(sim, flow_control="xonxoff", device_flow_control=True)
+    m["send"].update({"wait_for_ready": "xon", "ready_timeout_s": 10, "start_chars": "", "end_chars": "",
+                      "line_ending": "LF"})
+    bus = EventBus()
+    sender = Sender(bus)
+    sender.start(m, file_path="", text="G0 X0\n")
+    assert wait_until(lambda: sender.state is SendState.WAITING_READY, timeout=5)
+    time.sleep(0.2)
+    port.cnc_send(b"\x11\x13")
+    time.sleep(0.6)
+    assert sender.state is SendState.WAITING_READY, sender.snapshot()
+    assert bytes(port.received) == b""
+    port.cnc_send(b"\x11")
+    assert wait_until(lambda: sender.state.is_terminal, timeout=10), sender.snapshot()
+    assert sender.state is SendState.DONE, sender.snapshot()
     assert bytes(port.received).endswith(b"G0 X0\n")

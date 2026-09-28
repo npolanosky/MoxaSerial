@@ -139,6 +139,16 @@ def build_bridge(data_dir: Path, slow: bool, seed: bool) -> Any:
             info = self.last_posted_file()
             return info.get("path", "")
 
+        def pick_save_path(self, title: str = "", default_name: str = "", filter: str = "") -> str:
+            # No native dialog in a browser: exports land next to the demo data.
+            return str(data_dir / "exports" / (default_name or "export.json"))
+
+        def pick_open_path(self, title: str = "", filter: str = "") -> str:
+            # Newest export in the same folder, so export -> import round-trips.
+            folder = data_dir / "exports"
+            files = sorted(folder.glob("*.json"), key=lambda f: f.stat().st_mtime) if folder.is_dir() else []
+            return str(files[-1]) if files else ""
+
         def last_posted_file(self) -> dict[str, Any]:
             folders = [str(data_dir / "posted"), *self.store.get("watch_folders", [])]
             return lastpost.find_last_posted(folders)

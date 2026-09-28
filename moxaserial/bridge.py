@@ -55,6 +55,7 @@ from moxaserial.config import (
     ConfigStore,
     ValidationError,
     default_machine,
+    normalize_machine,
     validate_machine,
 )
 from moxaserial.dnc.preprocess import PreprocessOptions, preprocess
@@ -110,6 +111,18 @@ class Host:
 
     def pick_folder(self, title: str = "Select a folder") -> str:
         return ""
+
+    # --- settings import/export -----------------------------
+    def pick_open_path(self, title: str = "Select a file", filter: str = "All files (*.*)") -> str:
+        """Native open dialog for a non-NC file (a settings export). "" = cancelled."""
+        return ""
+
+    def pick_save_path(
+        self, title: str = "Save as", default_name: str = "", filter: str = "All files (*.*)"
+    ) -> str:
+        """Native save dialog. "" = cancelled."""
+        return ""
+    # ---------------------------------------------------------
 
     def last_posted_file(self) -> dict[str, Any]:
         """Most recently posted NC program. See moxaserial/ui/lastpost.py."""
@@ -201,6 +214,9 @@ class Bridge:
             "serial.listPorts": self._a_serial_list_ports,
             "settings.get": self._a_settings_get,
             "settings.save": self._a_settings_save,
+            "settings.export": self._a_settings_export,
+            "settings.importPreview": self._a_settings_import_preview,
+            "settings.import": self._a_settings_import,
             "file.browse": self._a_file_browse,
             "file.lastPost": self._a_file_last_post,
             "file.preview": self._a_file_preview,
@@ -386,7 +402,10 @@ class Bridge:
         would otherwise freeze Fusion's UI thread); the result arrives as a
         ``machines.testResult`` push. ``sync: true`` keeps the old blocking
         behaviour for tests and the dev server."""
-        machine = self._machine_or_die(payload.get("id"))
+        # The form as it stands is tested, saved or not - a brand-new
+        # machine has no id in the store yet (GitHub issue #3), and unsaved
+        # edits to host/port are what the operator wants checked.
+        machine = self._machine_for_test(payload)
         if payload.get("sync"):
             return self._run_machine_test(machine)
 
@@ -646,6 +665,114 @@ class Bridge:
         self.logs.set_level(str(data.get("log_level", "INFO")))
         return {"settings": data}
 
+    # --- settings import/export -----------------------------
+    _EXPORT_FILTER = "MoxaSerial settings (*.json);;All files (*.*)"
+
+    def _a_settings_export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Write the settings (or one machine) to a JSON file the operator
+        picks. ``path`` in the payload skips the dialog (tests, dev server)."""
+        from moxaserial import portable
+
+        scope = str(payload.get("scope", "all") or "all")
+        if scope not in portable.SCOPES:
+            raise ValidationError(f"Unknown export scope '{scope}'.")
+        machine: dict[str, Any] | None = None
+        if scope == "machine":
+            machine = self._machine_or_die(payload.get("machineId") or payload.get("id"))
+            envelope = portable.export_machine(machine)
+            names = [machine["name"]]
+        else:
+            envelope = portable.export_all(self.store.data)
+            names = [m["name"] for m in envelope["settings"].get("machines", [])]
+        path = str(payload.get("path", "") or "")
+        if not path:
+            path = self.host.pick_save_path(
+                "Export MoxaSerial settings",
+                portable.suggested_file_name(scope, machine),
+                self._EXPORT_FILTER,
+            )
+        if not path:
+            return {"path": "", "cancelled": True}
+        if not path.lower().endswith(".json"):
+            # The dialog's overwrite prompt covered the name as typed, not
+            # the name with the suffix we add - never clobber that silently.
+            if os.path.exists(path + ".json"):
+                raise ValidationError(
+                    f"{os.path.basename(path)}.json already exists; choose that name to overwrite it."
+                )
+            path += ".json"
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        except OSError as exc:
+            raise ValidationError(f"Could not write {path}: {exc}") from exc
+        log.info("Exported %s (%d machine(s)) to %s", scope, len(names), path)
+        return {"path": path, "scope": scope, "machines": names, "cancelled": False}
+
+    def _read_export(self, path: str) -> dict[str, Any]:
+        from moxaserial import portable
+
+        try:
+            # utf-8-sig: Notepad re-saves with a BOM, which plain utf-8 rejects.
+            raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except OSError as exc:
+            raise ValidationError(f"Could not read {path}: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise ValidationError(f"{os.path.basename(path)} is not a UTF-8 text file: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"{os.path.basename(path)} is not valid JSON: {exc}") from exc
+        return portable.parse_envelope(raw)
+
+    def _a_settings_import_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Pick a file and describe it so the UI can ask merge / replace."""
+        from moxaserial import portable
+
+        path = str(payload.get("path", "") or "")
+        if not path:
+            path = self.host.pick_open_path("Import MoxaSerial settings", self._EXPORT_FILTER)
+        if not path:
+            return {"path": "", "cancelled": True}
+        summary = portable.summarize(self._read_export(path))
+        return {"path": path, "cancelled": False, **summary}
+
+    def _a_settings_import(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Apply an export. ``mode`` is ``merge`` (default) or ``replace``;
+        ``dryRun:true`` reports what would change without saving."""
+        from moxaserial import portable
+
+        path = str(payload.get("path", "") or "")
+        if not path:
+            raise ValidationError("No file to import.")
+        mode = str(payload.get("mode", "merge") or "merge")
+        envelope = self._read_export(path)
+        if payload.get("dryRun"):
+            _, report = portable.apply_import(self.store.data, envelope, mode)
+            return {"path": path, "applied": False, "report": report.to_dict()}
+        reports: list[portable.ImportReport] = []
+
+        def merge(current: dict[str, Any]) -> dict[str, Any]:
+            new_data, rep = portable.apply_import(current, envelope, mode)
+            reports.append(rep)
+            return new_data
+
+        # One step under the store lock: a concurrent save (the update
+        # checker's bookkeeping, a UI toggle) cannot be lost in between.
+        data = self.store.transform(merge)
+        report = reports[-1]
+        self.logs.set_level(str(data.get("log_level", "INFO")))
+        for note in report.notes:
+            log.warning("Import: %s", note)
+        for warning in report.warnings:
+            log.warning("Import: %s", warning)
+        log.info(
+            "Imported %s from %s: %d added, %d updated.",
+            report.scope, os.path.basename(path), len(report.added), len(report.updated),
+        )
+        self.push("machines", {"machines": self.store.machines()})
+        return {"path": path, "applied": True, "report": report.to_dict(), "state": self.state()}
+
+    # ---------------------------------------------------------
+
     def _a_theme_set(self, payload: dict[str, Any]) -> dict[str, Any]:
         theme = str(payload.get("theme", "dark"))
         data = self.store.update_globals({"theme": theme})
@@ -884,6 +1011,22 @@ class Bridge:
                 "so it has to wait."
             )
         return ""
+
+    def _machine_for_test(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """A validated machine from ``payload["machine"]`` (the form), else
+        the stored one for ``payload["id"]``."""
+        form = payload.get("machine")
+        if not isinstance(form, dict):
+            return self._machine_or_die(payload.get("id"))
+        machine = normalize_machine(form)
+        # Only what connecting needs: an unrelated send/receive field error
+        # must not stop the operator checking the cable.
+        kind = machine.get("type")
+        if kind == "moxa" and not str(machine.get("host", "")).strip():
+            raise ValidationError("Host / IP address is required to test a Moxa machine.")
+        if kind == "serial" and not str(machine.get("serial_device", "")).strip():
+            raise ValidationError("Choose a serial port to test a direct serial machine.")
+        return machine
 
     def _machine_or_die(self, machine_id: Any) -> dict[str, Any]:
         if machine_id:

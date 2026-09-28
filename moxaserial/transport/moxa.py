@@ -317,7 +317,9 @@ class MoxaTransport(Transport):
         return resp
 
     def _port_init(self, force: bool = False) -> None:
-        line, flow = self._line, self._flow
+        # effective_flow drops XON/XOFF while the sender waits for the
+        # control's XON (the firmware would otherwise swallow it).
+        line, flow = self._line, self.effective_flow
         rtscts = flow.mode in ("rtscts", "both")
         sw = flow.software and self._device_flow
         key = (

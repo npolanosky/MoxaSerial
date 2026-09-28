@@ -19,6 +19,8 @@ Windows or macOS.
   port probe reports which serial port is free and what mode it is in.
 * **Updates itself** from GitHub Releases — checked in the background,
   installed on request, no Fusion restart.
+* **Export / import settings** to move machine profiles between computers;
+  folder paths are re-homed and macOS/Windows differences handled on import.
 * Stdlib only — nothing to `pip install` into Fusion.
 
 ## Install

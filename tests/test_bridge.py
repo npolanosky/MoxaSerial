@@ -423,3 +423,90 @@ def test_the_default_host_cannot_restart_the_addin():
     host = Host()
     assert host.restart_addin() is False
     assert host.addin_dir() == ""
+
+
+def test_machines_test_accepts_an_unsaved_machine_form(bridge):
+    """GitHub issue #3: Test on a brand-new profile failed with "No machine
+    with id" because the form had never been saved."""
+    form = ok(bridge.handle("machines.new", {"name": "Fresh"}))["machine"]
+    assert bridge.store.machine(form["id"]) is None
+    form["type"] = "simulator"
+    data = ok(bridge.handle("machines.test", {"id": form["id"], "machine": form, "sync": True}))
+    assert data["ok"] is True and data["info"]["kind"] == "simulator"
+
+
+def test_machines_test_rejects_an_invalid_form(bridge):
+    form = ok(bridge.handle("machines.new", {"name": "Bad"}))["machine"]
+    form["host"] = ""
+    reply = bridge.handle("machines.test", {"id": form["id"], "machine": form, "sync": True})
+    assert reply["ok"] is False and "Host" in reply["error"]
+
+
+def test_machines_test_ignores_unrelated_form_errors(bridge):
+    """A bad receive/send field must not stop the operator checking the link."""
+    form = ok(bridge.handle("machines.new", {"name": "Odd"}))["machine"]
+    form["type"] = "simulator"
+    form["send"]["line_ending"] = "CUSTOM"
+    form["send"]["line_ending_custom"] = ""
+    data = ok(bridge.handle("machines.test", {"id": form["id"], "machine": form, "sync": True}))
+    assert data["ok"] is True
+
+
+# -- settings import/export ---------------------------------------------------
+
+def test_settings_export_and_import_round_trip(bridge, tmp_path):
+    m = ok(bridge.handle("machines.new", {"name": "Exported"}))["machine"]
+    m["host"] = "192.0.2.9"
+    ok(bridge.handle("machines.save", {"machine": m}))
+    out = tmp_path / "all.json"
+    data = ok(bridge.handle("settings.export", {"scope": "all", "path": str(out)}))
+    assert data["path"] == str(out) and "Exported" in data["machines"]
+    assert out.exists()
+
+    preview = ok(bridge.handle("settings.importPreview", {"path": str(out)}))
+    assert preview["scope"] == "all" and "Exported" in preview["machines"]
+
+    # Change it locally, then bring the export back: merge restores the host.
+    m["host"] = "192.0.2.1"
+    ok(bridge.handle("machines.save", {"machine": m}))
+    dry = ok(bridge.handle("settings.import", {"path": str(out), "mode": "merge", "dryRun": True}))
+    assert dry["applied"] is False and dry["report"]["updated"] == ["Exported"]
+    assert bridge.store.machine(m["id"])["host"] == "192.0.2.1"
+    data = ok(bridge.handle("settings.import", {"path": str(out), "mode": "merge"}))
+    assert data["applied"] is True and data["state"]["machines"]
+    assert bridge.store.machine(m["id"])["host"] == "192.0.2.9"
+
+
+def test_settings_export_one_machine_adds_json_suffix(bridge, tmp_path):
+    out = tmp_path / "sim"
+    data = ok(bridge.handle("settings.export", {"scope": "machine", "machineId": "simulator", "path": str(out)}))
+    assert data["path"].endswith(".json") and data["machines"] == ["Simulator"]
+
+
+def test_settings_export_cancelled_is_not_an_error(bridge):
+    data = ok(bridge.handle("settings.export", {"scope": "all"}))
+    assert data["cancelled"] is True
+    data = ok(bridge.handle("settings.importPreview", {}))
+    assert data["cancelled"] is True
+
+
+def test_settings_import_accepts_a_bom_prefixed_file(bridge, tmp_path):
+    out = tmp_path / "bom.json"
+    ok(bridge.handle("settings.export", {"scope": "machine", "machineId": "simulator", "path": str(out)}))
+    out.write_bytes(b"\xef\xbb\xbf" + out.read_bytes())
+    data = ok(bridge.handle("settings.importPreview", {"path": str(out)}))
+    assert data["machines"] == ["Simulator"]
+
+
+def test_settings_export_refuses_to_clobber_via_added_suffix(bridge, tmp_path):
+    (tmp_path / "x.json").write_text("{}", encoding="utf-8")
+    reply = bridge.handle("settings.export", {"scope": "all", "path": str(tmp_path / "x")})
+    assert reply["ok"] is False and "already exists" in reply["error"]
+    assert (tmp_path / "x.json").read_text() == "{}"
+
+
+def test_settings_import_rejects_a_non_export(bridge, tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}", encoding="utf-8")
+    reply = bridge.handle("settings.importPreview", {"path": str(bad)})
+    assert reply["ok"] is False and "MoxaSerial settings file" in reply["error"]
